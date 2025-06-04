@@ -99,6 +99,17 @@ except Exception as general_import_error_its:
     logger.error(f"PROCESSOR UNEXPECTED IMPORT ERROR for IntegratedTradingSystem: {general_import_error_its}", exc_info=True)
     logger.warning("PROCESSOR: Processing will use the DUMMY fallback trading system.")
 
+# --- Darkpool Analyzer Import ---
+try:
+    from .dashboard_v2.elite_darkpool_analyzer import EliteDarkpoolAnalyzer, DarkpoolAnalyticsConfig
+    _elite_darkpool_analyzer_available = True
+    logger.info("PROCESSOR: Successfully imported EliteDarkpoolAnalyzer and DarkpoolAnalyticsConfig.")
+except ImportError as e_eda_imp:
+    _elite_darkpool_analyzer_available = False
+    EliteDarkpoolAnalyzer = None # type: ignore
+    DarkpoolAnalyticsConfig = None # type: ignore
+    logger.error(f"PROCESSOR IMPORT ERROR: EliteDarkpoolAnalyzer or DarkpoolAnalyticsConfig not found: {e_eda_imp}. Darkpool analysis will be skipped.", exc_info=True)
+
 
 class EnhancedDataProcessor:
     # __init__, _load_main_config_for_processor, _ensure_processed_output_dir_exists,
@@ -107,7 +118,8 @@ class EnhancedDataProcessor:
     # --- Ensure _validate_input_data checks for new required per-contract Greek flow fields if they become essential ---
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH_PROC, data_dir: str = DEFAULT_DATA_DIR_PROC):
         init_logger = logger.getChild("ProcessorInit")
-        init_logger.info(f"Initializing EnhancedDataProcessor V2.0.7 (Config: {config_path}, Data Dir: {data_dir})...")
+        self.processor_version = "2.0.8-DarkpoolIntegration" # Version updated
+        init_logger.info(f"Initializing EnhancedDataProcessor {self.processor_version} (Config: {config_path}, Data Dir: {data_dir})...")
         self.data_dir: str = data_dir
         self.config_path: str = config_path
         self.processor_config: Dict[str, Any] = self._load_main_config_for_processor()
@@ -125,7 +137,7 @@ class EnhancedDataProcessor:
         self.trading_system_instance: Union[ImportedITS, IntegratedTradingSystemDummy] # type: ignore
         self._initialize_trading_system_instance()
         self._ensure_processed_output_dir_exists()
-        init_logger.info("EnhancedDataProcessor V2.0.7 Initialized.")
+        init_logger.info(f"EnhancedDataProcessor {self.processor_version} Initialized.") # Version updated
     def _load_main_config_for_processor(self) -> Dict[str, Any]:
         load_cfg_logger = logger.getChild("ProcessorConfigLoad"); load_cfg_logger.debug(f"Loading FULL application configuration from: {self.config_path}")
         abs_config_path = self.config_path
@@ -183,6 +195,44 @@ class EnhancedDataProcessor:
             else: df_prepared['underlying_symbol'] = str(symbol_str); prep_logger.warning(f"({symbol_str}): Used main processing symbol ('{symbol_str}') for 'underlying_symbol'.")
         df_prepared['underlying_symbol'] = df_prepared['underlying_symbol'].astype(str)
         return df_prepared
+
+    def _calculate_hv(self, ohlc_df: Optional[pd.DataFrame], window: int = 20, trading_days_year: int = 252) -> Optional[float]:
+        hv_calc_logger = logger.getChild("CalculateHV")
+        if ohlc_df is None or ohlc_df.empty or 'close' not in ohlc_df.columns:
+            hv_calc_logger.warning("OHLC data for HV calculation is missing, empty, or lacks 'close' column.")
+            return None
+        if len(ohlc_df) < window + 1:
+            hv_calc_logger.warning(f"Not enough data for HV calculation (need {window + 1}, have {len(ohlc_df)}).")
+            return None
+        try:
+            close_prices = pd.to_numeric(ohlc_df['close'], errors='coerce')
+            if close_prices.isnull().all():
+                hv_calc_logger.warning("All 'close' prices are NaN after numeric conversion. Cannot calculate HV.")
+                return None
+
+            log_returns = np.log(close_prices / close_prices.shift(1))
+            valid_log_returns = log_returns.dropna()
+
+            if len(valid_log_returns) < window:
+                hv_calc_logger.warning(f"Not enough non-NaN log returns for HV (need {window}, have {len(valid_log_returns)}).")
+                return None
+
+            rolling_std = valid_log_returns.rolling(window=window, min_periods=window).std()
+            if rolling_std.empty or rolling_std.isnull().all():
+                 hv_calc_logger.warning("Could not calculate rolling std dev for HV (all NaNs or empty after rolling).")
+                 return None
+
+            last_valid_std = rolling_std.dropna().iloc[-1] if not rolling_std.dropna().empty else None
+            if last_valid_std is None or pd.isna(last_valid_std):
+                hv_calc_logger.warning("Last rolling std value is NaN. Cannot calculate HV.")
+                return None
+
+            annualized_hv = last_valid_std * np.sqrt(trading_days_year)
+            hv_calc_logger.info(f"Calculated HV ({window}d annualized): {annualized_hv:.4f}")
+            return annualized_hv if pd.notna(annualized_hv) else None
+        except Exception as e:
+            hv_calc_logger.error(f"Error calculating HV: {e}", exc_info=True)
+            return None
 
     # --- START OF MODIFIED/NEW SECTION for _calculate_all_strike_level_flows ---
     def _calculate_all_strike_level_flows(self, df_input: pd.DataFrame, symbol_context: str) -> pd.DataFrame:
@@ -401,9 +451,42 @@ class EnhancedDataProcessor:
         elif isinstance(data_to_convert, dict): return {str(k):self._convert_to_json_safe(v) for k,v in data_to_convert.items()}
         elif isinstance(data_to_convert, (list,tuple,set,np.ndarray)): return [self._convert_to_json_safe(item) for item in data_to_convert]
         return self._convert_scalar_to_json_safe(data_to_convert)
-    def _package_results(self, symbol_str_pkg: str, fetch_ts_pkg: Optional[str], final_metric_rich_df_obj_pkg: pd.DataFrame, levels_dict_pkg: Dict[str, pd.DataFrame], signals_dict_pkg: Dict[str, Dict[str,list]], recommendations_list_pkg: List[Dict[str,Any]], underlying_data_pkg: Optional[Dict[str,Any]], volatility_data_pkg: Optional[Dict[str,Any]], atr_value_used_pkg: Optional[float], final_error_message_pkg: Optional[str], processor_config_snapshot_pkg: Dict[str,Any]) -> Dict[str, Any]: # Unchanged
+    def _package_results(self, symbol_str_pkg: str, fetch_ts_pkg: Optional[str],
+                         final_metric_rich_df_obj_pkg: Optional[pd.DataFrame],
+                         levels_dict_pkg: Dict[str, pd.DataFrame],
+                         signals_dict_pkg: Dict[str, Dict[str,list]],
+                         recommendations_list_pkg: List[Dict[str,Any]],
+                         underlying_data_pkg: Optional[Dict[str,Any]],
+                         volatility_data_pkg: Optional[Dict[str,Any]],
+                         atr_value_used_pkg: Optional[float],
+                         final_error_message_pkg: Optional[str],
+                         processor_config_snapshot_pkg: Dict[str,Any],
+                         darkpool_analysis_df_pkg: Optional[pd.DataFrame] # New parameter
+                         ) -> Dict[str, Any]:
         pkg_logger = logger.getChild("PackageResults"); pkg_logger.info(f"Processor ({symbol_str_pkg}): Packaging results bundle..."); pkg_start_ts = datetime.now()
-        bundle:Dict[str,Any]={"symbol":symbol_str_pkg.upper(),"fetch_timestamp":fetch_ts_pkg,"processing_timestamp":pkg_start_ts.isoformat(),"processor_version":"2.0.7-GreekFlowIntegration","error":final_error_message_pkg,"processed_data":{"options_chain":[]},"final_metric_rich_df_obj":final_metric_rich_df_obj_pkg,"key_levels":{"support":[],"resistance":[],"high_conviction":[],"structure_change":[]},"trading_signals":{},"strategy_recommendations":[],"underlying":{},"volatility":{},"config_snapshot":{},"atr_value_used":atr_value_used_pkg}; json_err=False
+
+        # Ensure final_metric_rich_df_obj_pkg is a DataFrame, even if empty
+        safe_final_metric_rich_df = final_metric_rich_df_obj_pkg if isinstance(final_metric_rich_df_obj_pkg, pd.DataFrame) else pd.DataFrame()
+        safe_darkpool_df = darkpool_analysis_df_pkg if isinstance(darkpool_analysis_df_pkg, pd.DataFrame) else pd.DataFrame()
+
+        bundle:Dict[str,Any]={
+            "symbol":symbol_str_pkg.upper(),
+            "fetch_timestamp":fetch_ts_pkg,
+            "processing_timestamp":pkg_start_ts.isoformat(),
+            "processor_version":"2.0.8-DarkpoolIntegration", # Updated version
+            "error":final_error_message_pkg,
+            "final_metric_rich_df_obj": safe_final_metric_rich_df, # Store as DataFrame object
+            "darkpool_analysis_df_obj": safe_darkpool_df, # Store as DataFrame object
+            "processed_data":{"options_chain":[]}, # This will be JSON safe
+            "key_levels":{"support":[],"resistance":[],"high_conviction":[],"structure_change":[]},
+            "trading_signals":{},
+            "strategy_recommendations":[],
+            "underlying":{},
+            "volatility":{},
+            "config_snapshot":{},
+            "atr_value_used":atr_value_used_pkg
+        }
+        json_err=False
         try:
             converted_chain=self._convert_to_json_safe(final_metric_rich_df_obj_pkg)
             if isinstance(converted_chain,list): bundle["processed_data"]["options_chain"]=converted_chain
@@ -458,11 +541,73 @@ class EnhancedDataProcessor:
         
         final_metric_rich_df, lvls_its, sigs_its, recs_list, atr_val_used, its_err = self._apply_integrated_strategies(df_after_pressure_calc=df_with_all_flows, underlying_data_bundle_from_fetcher=underlying_data or {}, volatility_data_for_its=volatility_data or {}, historical_ohlc_data_for_atr=historical_ohlc_df, symbol_str_context=sym_proc)
         if its_err: overall_err = f"{overall_err if overall_err else ''} | {its_err}".strip(" | ")
-        final_bundle = self._package_results(sym_proc,fetch_ts_proc,final_metric_rich_df,lvls_its,sigs_its,recs_list,underlying_data,volatility_data,atr_val_used,overall_err,self.processor_config)
-        final_log_lvl = logging.ERROR if final_bundle.get("error") else logging.INFO; final_stat_msg = final_bundle.get('error','Success'); log_stat_disp = (str(final_stat_msg)[:150]+'...') if isinstance(final_stat_msg,str) and len(final_stat_msg)>150 else final_stat_msg
-        logger.log(final_log_lvl, f"--- [Processor V2.0.7 End] Finished for: {sym_proc}. Status: '{log_stat_disp}' ---"); return final_bundle
-    def process_market_data(self, market_data_bundle_dict: Dict[str, Any]) -> Dict[str, Any]: # Largely unchanged
-        mkt_logger = logger.getChild("MarketProcessor"); mkt_logger.info("--- [Processor V2.0.7] Market Data Aggregation START ---"); errors_list:List[str]=[]; prim_sym_cfg=self.processor_config.get("market_primary_symbol","SPX"); mkt_fetch_ts:Optional[str]=None; num_proc,num_err=0,0
+
+        # --- Darkpool Analysis Integration ---
+        darkpool_results_df = pd.DataFrame()
+        try:
+            if not _elite_darkpool_analyzer_available or EliteDarkpoolAnalyzer is None or DarkpoolAnalyticsConfig is None:
+                logger.warning(f"Processor ({sym_proc}): EliteDarkpoolAnalyzer or its config is not available. Skipping Darkpool analysis.")
+            else:
+                market_regime_metric_for_darkpool: Optional[float] = None
+                if isinstance(volatility_data, dict):
+                    vix_val = volatility_data.get('vix_close')
+                    if vix_val is not None:
+                        market_regime_metric_for_darkpool = pd.to_numeric(vix_val, errors='coerce')
+                        if pd.notna(market_regime_metric_for_darkpool):
+                            logger.info(f"Processor ({sym_proc}): Using VIX {market_regime_metric_for_darkpool:.4f} for Darkpool regime.")
+                        else:
+                            logger.warning(f"Processor ({sym_proc}): VIX value '{vix_val}' was NaN, cannot use for Darkpool regime.")
+                            market_regime_metric_for_darkpool = None
+
+                if market_regime_metric_for_darkpool is None:
+                    if historical_ohlc_df is not None and not historical_ohlc_df.empty:
+                        market_regime_metric_for_darkpool = self._calculate_hv(historical_ohlc_df)
+                        if market_regime_metric_for_darkpool is not None:
+                             logger.info(f"Processor ({sym_proc}): Using calculated HV {market_regime_metric_for_darkpool:.4f} for Darkpool regime.")
+                    else:
+                        logger.warning(f"Processor ({sym_proc}): historical_ohlc_df not available for HV calculation.")
+
+                if market_regime_metric_for_darkpool is None:
+                    logger.warning(f"Processor ({sym_proc}): No VIX or calculable HV for Darkpool regime metric. Analyzer will use default regime.")
+
+                dp_config = DarkpoolAnalyticsConfig()
+
+                current_price_for_dp: Optional[float] = current_und_px_its # Use price determined before ITS
+                if pd.isna(current_price_for_dp) or not (isinstance(current_price_for_dp, (int,float)) and current_price_for_dp > 0):
+                    logger.warning(f"Processor ({sym_proc}): Invalid or missing underlying price ({current_price_for_dp}) for Darkpool. Skipping analysis.")
+                elif final_metric_rich_df is None or final_metric_rich_df.empty:
+                    logger.warning(f"Processor ({sym_proc}): Skipping EliteDarkpoolAnalyzer due to empty input options DataFrame (final_metric_rich_df).")
+                else:
+                    logger.info(f"Processor ({sym_proc}): Running EliteDarkpoolAnalyzer with underlying price {current_price_for_dp:.2f}.")
+                    darkpool_analyzer = EliteDarkpoolAnalyzer(
+                        options_df=final_metric_rich_df.copy(),
+                        underlying_price=current_price_for_dp,
+                        config=dp_config,
+                        market_regime_metric_value=market_regime_metric_for_darkpool
+                    )
+                    darkpool_results_df = darkpool_analyzer.analyze()
+                    logger.info(f"Processor ({sym_proc}): EliteDarkpoolAnalyzer finished. Found {len(darkpool_results_df)} ranked levels.")
+
+        except Exception as e_dp_analyze:
+            dp_err_str = f"Error during EliteDarkpoolAnalyzer execution: {e_dp_analyze}"
+            logger.error(f"Processor ({sym_proc}): {dp_err_str}", exc_info=True)
+            overall_err = f"{overall_err if overall_err else ''} | {dp_err_str}".strip(" | ")
+        # --- End Darkpool Analysis Integration ---
+
+        final_bundle = self._package_results(
+            sym_proc, fetch_ts_proc, final_metric_rich_df, lvls_its, sigs_its, recs_list,
+            underlying_data, volatility_data, atr_val_used, overall_err,
+            self.processor_config,
+            darkpool_analysis_df_pkg=darkpool_results_df
+        )
+
+        final_log_lvl = logging.ERROR if final_bundle.get("error") else logging.INFO
+        final_stat_msg = final_bundle.get('error','Success')
+        log_stat_disp = (str(final_stat_msg)[:150]+'...') if isinstance(final_stat_msg,str) and len(final_stat_msg)>150 else final_stat_msg
+        logger.log(final_log_lvl, f"--- [Processor {self.processor_version} End] Finished for: {sym_proc}. Status: '{log_stat_disp}' ---"); return final_bundle
+
+    def process_market_data(self, market_data_bundle_dict: Dict[str, Any]) -> Dict[str, Any]:
+        mkt_logger = logger.getChild("MarketProcessor"); mkt_logger.info(f"--- [Processor {self.processor_version}] Market Data Aggregation START ---"); errors_list:List[str]=[]; prim_sym_cfg=self.processor_config.get("market_primary_symbol","SPX"); mkt_fetch_ts:Optional[str]=None; num_proc,num_err=0,0
         prim_sym_bndl=market_data_bundle_dict.get(prim_sym_cfg)
         if isinstance(prim_sym_bndl,dict): mkt_fetch_ts=prim_sym_bndl.get("fetch_timestamp")
         elif market_data_bundle_dict: first_key=next(iter(market_data_bundle_dict),None); mkt_fetch_ts=market_data_bundle_dict[first_key].get("fetch_timestamp") if first_key and isinstance(market_data_bundle_dict.get(first_key),dict) else None
@@ -478,51 +623,59 @@ class EnhancedDataProcessor:
 
 if __name__ == "__main__":
     main_proc_test_logger = logger.getChild("ProcessorTestMain")
-    main_proc_test_logger.info("--- EnhancedDataProcessor V2.0.7 Test Run (Greek Flow Integration) --- ")
+    main_proc_test_logger.info("--- EnhancedDataProcessor V2.0.8 Test Run (Darkpool Integration) --- ")
     test_cfg_path_main = DEFAULT_CONFIG_PATH_PROC
     if not os.path.exists(test_cfg_path_main):
          main_proc_test_logger.warning(f"Main config '{test_cfg_path_main}' not found. Using internal defaults & creating dummy if possible.")
          try:
-             with open(test_cfg_path_main,'w') as f_cfg_dum: json.dump({"system_settings":{"log_level":"DEBUG"}, "data_processor_settings":{"perform_strict_column_validation":False}},f_cfg_dum) # Make strict validation false for dummy
+             with open(test_cfg_path_main,'w') as f_cfg_dum: json.dump({"system_settings":{"log_level":"DEBUG"}, "data_processor_settings":{"perform_strict_column_validation":False}},f_cfg_dum)
              main_proc_test_logger.info(f"Created dummy '{test_cfg_path_main}' for test.")
          except Exception as e_cfg_dum_crt: main_proc_test_logger.error(f"Could not create dummy config: {e_cfg_dum_crt}")
     try:
          processor_test_instance = EnhancedDataProcessor(config_path=test_cfg_path_main)
-         main_proc_test_logger.info("\n--- Test Case: Basic Options Chain with Greek Flows (Processor V2.0.7) ---")
-         sample_opts_data_gf = {
-            "strike":[100.0,100.0,105.0,105.0],"opt_kind":["call","put","call","put"], "symbol":["GFOPT"]*4, "underlying_symbol":["GFTEST"]*4,
-            "fetch_timestamp":[datetime.now().isoformat()]*4, "price":[102.50]*4, # Underlying price
-            # Heuristic Pressure Inputs
-            "volm_buy": [10,5,8,6], "volm_sell": [3,2,4,3], "value_buy": [1000,50,800,60], "value_sell": [300,20,400,30],
-            # True Net Flow Inputs (from API's _bs fields)
-            "volm_bs": [7,3,4,3], "value_bs": [700,30,400,30],
-            # Delta Flows
-            "deltas_buy": [100, -40, 80, -30], "deltas_sell": [20, -10, 15, -5],
-            # Gamma Flows
-            "gammas_buy": [10,10,8,8], "gammas_sell": [3,3,2,2],
-            # Vega Flows
-            "vegas_buy": [50,50,40,40], "vegas_sell": [10,10,8,8],
-            # Theta Flows (typically negative)
-            "thetas_buy": [-20,-20,-15,-15], "thetas_sell": [-5,-5,-4,-4],
-            # Other Greek OI/Flows needed by ITS
-            'gxoi':[100,100,80,80],'dxoi':[1000,-400,800,-300],'txoi':[-10,-10,-8,-8],'vxoi':[20,20,15,15],'charmxoi':[1,1,0.8,0.8],'vannaxoi':[5,5,4,4],'vommaxoi':[0.1,0.1,0.08,0.08],
-            'gxvolm':[10,10,8,8],'dxvolm':[100,-40,80,-30],'txvolm':[-1,-1,-0.8,-0.8],'vxvolm':[5,5,4,4],'charmxvolm':[0.1,0.1,0.08,0.08],'vannaxvolm':[0.5,0.5,0.4,0.4],'vommaxvolm':[0.01,0.01,0.008,0.008],
-            'oi':[100,100,80,80],'volm':[10,10,8,8], 'volatility':[0.2,0.2,0.18,0.18]
+         main_proc_test_logger.info("\n--- Test Case: Basic Options Chain with Darkpool Integration (Processor V2.0.8) ---")
+         sample_opts_data_dp = {
+            "strike":[100.0,100.0,105.0,105.0, 110.0, 110.0],"opt_kind":["call","put","call","put", "call", "put"], "symbol":["DPTEST"]*6,
+            "fetch_timestamp":[datetime.now().isoformat()]*6, "price":[102.50]*6,
+            "volm_buy": [10,5,8,6,12,7], "volm_sell": [3,2,4,3,5,3],
+            "value_buy": [1000,50,800,60,1200,70], "value_sell": [300,20,400,30,500,30],
+            "volm_bs": [7,3,4,3,7,4], "value_bs": [700,30,400,30,700,40],
+            "deltas_buy": [100, -40, 80, -30, 120, -50], "deltas_sell": [20, -10, 15, -5, 25, -15],
+            "gammas_buy": [10,10,8,8,12,12], "gammas_sell": [3,3,2,2,4,4],
+            "vegas_buy": [50,50,40,40,60,60], "vegas_sell": [10,10,8,8,12,12],
+            "thetas_buy": [-20,-20,-15,-15,-25,-25], "thetas_sell": [-5,-5,-4,-4,-7,-7],
+            'gxoi':[100,100,80,80,120,120],'dxoi':[1000,-400,800,-300,1200,-500],'txoi':[-10,-10,-8,-8,-12,-12],'vxoi':[20,20,15,15,25,25],
+            'charmxoi':[1,1,0.8,0.8,1.2,1.2],'vannaxoi':[5,5,4,4,6,6],'vommaxoi':[0.1,0.1,0.08,0.08,0.12,0.12],
+            'gxvolm':[10,10,8,8,12,12],'dxvolm':[100,-40,80,-30,120,-50],'txvolm':[-1,-1,-0.8,-0.8,-1.2,-1.2],'vxvolm':[5,5,4,4,6,6],
+            'charmxvolm':[0.1,0.1,0.08,0.08,0.12,0.12],'vannaxvolm':[0.5,0.5,0.4,0.4,0.6,0.6],'vommaxvolm':[0.01,0.01,0.008,0.008,0.012,0.012],
+            'oi':[100,100,80,80,120,120],'volm':[10,10,8,8,12,12], 'volatility':[0.2,0.2,0.18,0.18,0.22,0.22]
          }
-         sample_df_gf = pd.DataFrame(sample_opts_data_gf)
-         sample_und_gf = { "symbol": "GFTEST", "price": 102.50, "fetch_timestamp": datetime.now().isoformat(), "volatility": 0.19 }
-         ohlc_dates_gf = [date.today() - timedelta(days=i) for i in range(15,0,-1)]; sample_ohlc_hist_data_gf = {'date':pd.to_datetime(ohlc_dates_gf),'open':np.random.uniform(98,100,15),'high':np.random.uniform(100,103,15),'low':np.random.uniform(97,99,15),'close':np.random.uniform(99,102,15),'volume':np.random.randint(100000,500000,15)}; sample_ohlc_df_gf=pd.DataFrame(sample_ohlc_hist_data_gf)
-         sample_vol_data_gf = {"current_iv":0.19, "avg_iv_5day":0.185, "iv_percentile_30d":0.40}
-         result_bundle_gf = processor_test_instance.process_data_with_integrated_strategies(options_chain_df=sample_df_gf,underlying_data=sample_und_gf,volatility_data=sample_vol_data_gf,historical_ohlc_df=sample_ohlc_df_gf)
-         main_proc_test_logger.info(f"Test Run GF - Error in Bundle: {result_bundle_gf.get('error')}")
-         df_obj_proc_gf = result_bundle_gf.get("final_metric_rich_df_obj")
-         if isinstance(df_obj_proc_gf, pd.DataFrame) and not df_obj_proc_gf.empty:
-             main_proc_test_logger.info(f"Test Run GF - Processed DF shape: {df_obj_proc_gf.shape}")
-             cols_to_check_in_output = [NET_HEURISTIC_VALUE_PRESSURE_COL, NET_HEURISTIC_VOLUME_PRESSURE_COL, NET_HEURISTIC_DELTA_PRESSURE_COL, NET_DELTA_FLOW_TOTAL_COL, NET_GAMMA_FLOW_COL, NET_VEGA_FLOW_COL, NET_THETA_EXPOSURE_COL, TRUE_NET_VOLUME_FLOW_COL, TRUE_NET_VALUE_FLOW_COL, "mspi"]
-             main_proc_test_logger.info(f"Test Run GF - Checking for new/key columns (first record if available):")
-             for col_chk in cols_to_check_in_output:
-                 if col_chk in df_obj_proc_gf.columns: main_proc_test_logger.info(f"  Found '{col_chk}'. Example value: {df_obj_proc_gf[col_chk].iloc[0] if not df_obj_proc_gf.empty else 'N/A_DF_EMPTY'}")
-                 else: main_proc_test_logger.error(f"  MISSING Column '{col_chk}' in processed output!")
-         else: main_proc_test_logger.error("Test Run GF - 'final_metric_rich_df_obj' is MISSING or not a valid DataFrame!")
-    except Exception as e_proc_test_main_gf: main_proc_test_logger.critical(f"Error during EnhancedDataProcessor Greek Flow test run: {e_proc_test_main_gf}", exc_info=True)
-    main_proc_test_logger.info("--- EnhancedDataProcessor V2.0.7 Test Run Complete ---")
+         sample_df_dp = pd.DataFrame(sample_opts_data_dp)
+         sample_und_dp = { "symbol": "DPTEST", "price": 102.50, "fetch_timestamp": datetime.now().isoformat(), "volatility": 0.19 }
+         ohlc_dates_dp = [date.today() - timedelta(days=i) for i in range(25,0,-1)];
+         sample_ohlc_hist_data_dp = {'date':pd.to_datetime(ohlc_dates_dp),'open':np.random.uniform(98,100,25),'high':np.random.uniform(100,103,25),'low':np.random.uniform(97,99,25),'close':np.random.uniform(99,102,25),'volume':np.random.randint(100000,500000,25)}; sample_ohlc_df_dp=pd.DataFrame(sample_ohlc_hist_data_dp)
+         sample_vol_data_dp = {"current_iv":0.19, "avg_iv_5day":0.185, "iv_percentile_30d":0.40, "vix_close": 22.5}
+
+         result_bundle_dp = processor_test_instance.process_data_with_integrated_strategies(
+             options_chain_df=sample_df_dp,
+             underlying_data=sample_und_dp,
+             volatility_data=sample_vol_data_dp,
+             historical_ohlc_df=sample_ohlc_df_dp
+         )
+         main_proc_test_logger.info(f"Test Run DP - Error in Bundle: {result_bundle_dp.get('error')}")
+         df_obj_proc_dp = result_bundle_dp.get("final_metric_rich_df_obj")
+         darkpool_df_obj_dp = result_bundle_dp.get("darkpool_analysis_df_obj")
+
+         if isinstance(df_obj_proc_dp, pd.DataFrame) and not df_obj_proc_dp.empty:
+             main_proc_test_logger.info(f"Test Run DP - Processed Options DF shape: {df_obj_proc_dp.shape}")
+         else: main_proc_test_logger.error("Test Run DP - 'final_metric_rich_df_obj' is MISSING or not a valid DataFrame!")
+
+         if isinstance(darkpool_df_obj_dp, pd.DataFrame) and not darkpool_df_obj_dp.empty:
+             main_proc_test_logger.info(f"Test Run DP - Darkpool Analysis DF shape: {darkpool_df_obj_dp.shape}")
+             main_proc_test_logger.info(f"Test Run DP - Darkpool Analysis DF head:\n{darkpool_df_obj_dp.head().to_string()}")
+         elif isinstance(darkpool_df_obj_dp, pd.DataFrame) and darkpool_df_obj_dp.empty :
+             main_proc_test_logger.warning("Test Run DP - Darkpool Analysis DF is EMPTY (Might be expected if no levels found).")
+         else: main_proc_test_logger.error("Test Run DP - 'darkpool_analysis_df_obj' is MISSING or not a valid DataFrame!")
+
+    except Exception as e_proc_test_main_dp: main_proc_test_logger.critical(f"Error during EnhancedDataProcessor Darkpool test run: {e_proc_test_main_dp}", exc_info=True)
+    main_proc_test_logger.info("--- EnhancedDataProcessor V2.0.8 Test Run Complete ---")
