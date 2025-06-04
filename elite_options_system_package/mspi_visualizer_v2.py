@@ -1969,8 +1969,8 @@ class MSPIVisualizerV2:
         chart_logger.info(f"{chart_name} for {symbol} created successfully.")
         return fig
 
-        # --- E. Standalone Test Block (`if __name__ == '__main__':`) ---
-    if __name__ == '__main__':
+# --- E. Standalone Test Block (`if __name__ == '__main__':`) ---
+if __name__ == '__main__':
         
         # --- E. Standalone Test Block (`if __name__ == '__main__':`) ---
     if __name__ == '__main__':

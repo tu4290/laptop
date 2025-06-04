@@ -28,6 +28,32 @@ import importlib # For robust dependency checking
 import json
 from typing import Optional, List, Dict, Any, Tuple
 
+# --- Python Path Adjustment for Package Resolution ---
+# import sys # sys is already imported
+# import os # os is already imported
+
+# Goal: Add the directory *containing* 'elite_options_system_package' to sys.path.
+# Assuming this script (run_enhanced_dashboard_v2.py) is directly inside 'elite_options_system_package'.
+# So, os.path.dirname(__file__) gives the absolute path to 'elite_options_system_package'.
+# And its parent is what needs to be in sys.path.
+
+current_script_directory = os.path.dirname(os.path.abspath(__file__))
+package_parent_directory = os.path.abspath(os.path.join(current_script_directory, '..'))
+
+if package_parent_directory not in sys.path:
+    sys.path.insert(0, package_parent_directory)
+    # Attempt to get logger if already initialized, otherwise print
+    try:
+        logger.info(f"Adjusted sys.path: Added '{package_parent_directory}' for package discovery.")
+    except NameError: # logger might not be defined yet
+        print(f"INFO: Adjusted sys.path: Added '{package_parent_directory}' for package discovery.")
+else:
+    try:
+        logger.info(f"Sys.path already contains '{package_parent_directory}'. No adjustment needed.")
+    except NameError:
+        print(f"INFO: Sys.path already contains '{package_parent_directory}'. No adjustment needed.")
+# --- End Python Path Adjustment ---
+
 # --- Initial Configuration ---
 logging.basicConfig(
     level=logging.INFO,
