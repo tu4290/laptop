@@ -1880,6 +1880,15 @@ class MSPIVisualizerV2:
 
         # First, try to get the whole 'elite_score_chart_config' block
         loaded_chart_config_block = self._get_config_value(["elite_score_chart_config"], default_override=None)
+        chart_logger.info(f"EliteScoreChart DEBUG: Raw visual_settings from config: {loaded_chart_config_block}") # Renamed visual_settings to loaded_chart_config_block for clarity before merge
+        # Log the specific positive color strings from config
+        if isinstance(loaded_chart_config_block, dict): # Check if it's a dict before .get
+            chart_logger.info(f"EliteScoreChart DEBUG: Config strong_positive_color_rgb: {loaded_chart_config_block.get('score_categories', {}).get('Strong Positive', {}).get('base_color_rgba')}")
+            chart_logger.info(f"EliteScoreChart DEBUG: Config moderate_positive_color_rgb: {loaded_chart_config_block.get('score_categories', {}).get('Moderate Positive', {}).get('base_color_rgba')}")
+            chart_logger.info(f"EliteScoreChart DEBUG: Config neutral_positive_color_rgb: {loaded_chart_config_block.get('score_categories', {}).get('Weak Positive', {}).get('base_color_rgba')}") # Assuming Weak Positive is the neutral positive for >0 scores
+        else:
+            chart_logger.info("EliteScoreChart DEBUG: loaded_chart_config_block is not a dict, cannot log specific color strings from it.")
+
 
         # Deep merge the loaded config with the method-level default
         if isinstance(loaded_chart_config_block, dict):
@@ -1899,6 +1908,17 @@ class MSPIVisualizerV2:
         col_elite_score = CHART_COL_NAMES.get("elite_score", "elite_impact_score")
         col_signal_strength = CHART_COL_NAMES.get("signal_strength", "signal_strength")
         # self.col_strike is already defined in __init__
+
+        # Log parsed RGB tuples (moved slightly down after SCORE_CATEGORIES is fully defined by merge)
+        # This requires SCORE_CATEGORIES to be defined from final_chart_config first.
+        # Let's log them after SCORE_CATEGORIES, OPACITY_SETTINGS, etc. are set.
+        chart_logger.info(f"EliteScoreChart DEBUG: Final SCORE_CATEGORIES after merge: {SCORE_CATEGORIES}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed STRONG_POS_VIVID_GREEN_RGB (from Strong Positive category): {SCORE_CATEGORIES.get('Strong Positive', {}).get('base_color_rgba')}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed MODERATE_POS_PALE_GREEN_RGB (from Moderate Positive category): {SCORE_CATEGORIES.get('Moderate Positive', {}).get('base_color_rgba')}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed NEUTRAL_POS_BLUE_RGB (from Weak Positive category): {SCORE_CATEGORIES.get('Weak Positive', {}).get('base_color_rgba')}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed NEUTRAL_NEG_ORANGE_RGB (from Weak Negative category): {SCORE_CATEGORIES.get('Weak Negative', {}).get('base_color_rgba')}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed MODERATE_NEG_PALE_RED_RGB (from Moderate Negative category): {SCORE_CATEGORIES.get('Moderate Negative', {}).get('base_color_rgba')}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed STRONG_NEG_VIVID_RED_RGB (from Strong Negative category): {SCORE_CATEGORIES.get('Strong Negative', {}).get('base_color_rgba')}")
 
         try:
             if not isinstance(processed_data, pd.DataFrame) or processed_data.empty:
@@ -2004,18 +2024,21 @@ class MSPIVisualizerV2:
             chart_logger.debug(f"Elite Impact Score chart: Value counts for score_category:\n{plot_df['score_category'].value_counts()}")
 
             # --- Helper function for color and opacity adjustments ---
-            def get_adjusted_color_for_bar(category_name: str, strength_scaled: float) -> str:
-                category_props = SCORE_CATEGORIES.get(category_name)
-                if not category_props: return "rgba(128,128,128,0.5)" # Default grey if category not found
+            # This function is now more of a wrapper since the base color is selected before calling it in the loop.
+            # However, the actual color string parsing and adjustments are still done here.
+            def get_adjusted_color_for_bar(base_rgb_tuple_param: Tuple[int,int,int], strength_scaled: float, category_name_for_debug: str) -> str:
+                # category_props = SCORE_CATEGORIES.get(category_name) # Not needed if base_rgb_tuple is passed directly
+                # if not category_props: return "rgba(128,128,128,0.5)"
 
-                base_color_str = category_props.get("base_color_rgba", "rgba(128,128,128,1)")
+                # base_color_str = category_props.get("base_color_rgba", "rgba(128,128,128,1)") # Base color already selected
+                r_base, g_base, b_base = base_rgb_tuple_param # Unpack the pre-selected base RGB tuple
 
-                try: # Parse base RGBA string (e.g., "rgba(0,100,0,1)")
-                    parsed_color = self._parse_color_string(base_color_str, default_opacity=1.0) # Use existing helper
-                    r_base, g_base, b_base, a_base_original = map(float, parsed_color.strip('rgba()').split(','))
-                except Exception as e_parse:
-                    chart_logger.error(f"Could not parse base_color_rgba: '{base_color_str}' for category '{category_name}'. Error: {e_parse}. Using fallback black.")
-                    r_base, g_base, b_base, a_base_original = 0,0,0,1
+                # try: # Parse base RGBA string (e.g., "rgba(0,100,0,1)")
+                #     parsed_color = self._parse_color_string(base_color_str, default_opacity=1.0) # Use existing helper
+                #     r_base, g_base, b_base, a_base_original = map(float, parsed_color.strip('rgba()').split(','))
+                # except Exception as e_parse:
+                #     chart_logger.error(f"Could not parse base_color_rgba: '{base_color_str}' for category '{category_name}'. Error: {e_parse}. Using fallback black.")
+                #     r_base, g_base, b_base, a_base_original = 0,0,0,1
 
                 # 1. Adjust opacity based on signal_strength_scaled
                 min_op = OPACITY_SETTINGS.get("min_opacity", 0.3)
@@ -2038,12 +2061,12 @@ class MSPIVisualizerV2:
                 # At strength_scaled=1, color is 1.0 * base + 0 * pale_target = base
                 vividness_interp_factor = pale_intensity_factor + (1.0 - pale_intensity_factor) * strength_scaled
 
-                r_final = int(r_base * vividness_interp_factor + r_pale_target * (1 - vividness_interp_factor))
-                g_final = int(g_base * vividness_interp_factor + g_pale_target * (1 - vividness_interp_factor))
-                b_final = int(b_base * vividness_interp_factor + b_pale_target * (1 - vividness_interp_factor))
+                r_final_adj = int(r_base * vividness_interp_factor + r_pale_target * (1 - vividness_interp_factor))
+                g_final_adj = int(g_base * vividness_interp_factor + g_pale_target * (1 - vividness_interp_factor))
+                b_final_adj = int(b_base * vividness_interp_factor + b_pale_target * (1 - vividness_interp_factor))
 
-                r_final, g_final, b_final = max(0,min(255,r_final)), max(0,min(255,g_final)), max(0,min(255,b_final))
-                return f'rgba({r_final},{g_final},{b_final},{final_opacity:.2f})'
+                r_final_adj, g_final_adj, b_final_adj = max(0,min(255,r_final_adj)), max(0,min(255,g_final_adj)), max(0,min(255,b_final_adj))
+                return f'rgba({r_final_adj},{g_final_adj},{b_final_adj},{final_opacity:.2f})'
 
             # --- Create Figure and Traces ---
             fig = go.Figure()
@@ -2057,53 +2080,191 @@ class MSPIVisualizerV2:
             # Sort categories by min_score descending for legend order (Strong Pos at top)
             sorted_legend_categories = sorted(SCORE_CATEGORIES.items(), key=lambda item: item[1]['min_score'], reverse=True)
 
-            for category_name, category_props in sorted_legend_categories:
-                category_df = plot_df[plot_df['score_category'] == category_name]
-                if category_df.empty:
-                    # Add a dummy trace for legend completeness if desired, or skip
+            # Pre-calculate all bar colors and details for logging before creating traces
+            # This is a change from the previous structure to facilitate the detailed logging requested.
+            all_bars_details = []
+            for i in range(len(plot_df)):
+                score = plot_df[col_elite_score].iloc[i]
+                s_strength = plot_df['signal_strength_scaled'].iloc[i]
+                current_category_name = plot_df['score_category'].iloc[i] # Category determined earlier
+
+                # Determine base RGB from SCORE_CATEGORIES based on current_category_name
+                # This part is slightly redundant with get_score_category but needed for direct RGB tuple access
+                # And for logging the *chosen* base RGB before adjustments.
+
+                base_rgb_tuple_for_this_bar = (128, 128, 128) # Default grey
+                log_category_descriptor = "Unknown/DefaultGrey"
+
+                # Simplified: Use the already determined 'current_category_name' to fetch base color string
+                # Then parse it to an RGB tuple.
+                category_props_for_bar = SCORE_CATEGORIES.get(current_category_name)
+                if category_props_for_bar:
+                    base_color_rgba_str = category_props_for_bar.get("base_color_rgba", "rgba(128,128,128,1)")
+                    try:
+                        # Use _parse_color_string to get a consistent "rgba(r,g,b,a)" string, then extract r,g,b
+                        parsed_rgba_for_base = self._parse_color_string(base_color_rgba_str, 1.0)
+                        rgb_parts = parsed_rgba_for_base.replace('rgba(', '').replace(')', '').split(',')
+                        base_rgb_tuple_for_this_bar = (int(rgb_parts[0]), int(rgb_parts[1]), int(rgb_parts[2]))
+                        log_category_descriptor = current_category_name # Use the name from categorization
+                    except Exception as e_base_parse:
+                        chart_logger.error(f"Error parsing base_color_rgba '{base_color_rgba_str}' for category '{current_category_name}': {e_base_parse}")
+                        # base_rgb_tuple_for_this_bar remains grey, log_category_descriptor remains Unknown
+                else:
+                    chart_logger.warning(f"Category '{current_category_name}' not found in SCORE_CATEGORIES for bar {i}. Using default grey.")
+
+                # Now, call get_adjusted_color_for_bar with the determined base_rgb_tuple and strength
+                final_rgba_str = get_adjusted_color_for_bar(base_rgb_tuple_for_this_bar, s_strength, current_category_name)
+
+                all_bars_details.append({
+                    'strike_numeric': plot_df['strike_numeric'].iloc[i],
+                    'score': score,
+                    'signal_strength_scaled': s_strength,
+                    'category_name': current_category_name,
+                    'base_rgb_selected': base_rgb_tuple_for_this_bar,
+                    'final_rgba': final_rgba_str,
+                    'y_index': strike_map_for_hline.get(plot_df['strike_numeric'].iloc[i]) # Get y_index for this bar
+                })
+
+                if i < 5: # Log for first 5 bars
+                    # For logging interpolated RGB, we need to parse final_rgba_str or re-calculate parts of get_adjusted_color_for_bar here.
+                    # For simplicity, the detailed log will now show the final RGBA and the base RGB selected.
+                    # The internal workings of get_adjusted_color_for_bar (interpolation) are implicitly tested.
+                    chart_logger.info(
+                        f"EliteScoreChart VisualDEBUG Bar {i} (Strike: {plot_df['strike_numeric'].iloc[i]:.2f}): "
+                        f"Score={score:.4f}, SignalStr={s_strength:.2f} -> Category='{current_category_name}', BaseRGBSelected={base_rgb_tuple_for_this_bar} -> "
+                        # InterpolatedRGB parts are inside get_adjusted_color_for_bar
+                        f"FinalRGBA='{final_rgba_str}'"
+                    )
+
+            for category_name_legend, category_props_legend in sorted_legend_categories:
+                # Filter `all_bars_details` for the current category to build the trace
+                bars_for_this_category_trace = [bar_detail for bar_detail in all_bars_details if bar_detail['category_name'] == category_name_legend]
+
+                if not bars_for_this_category_trace:
                     fig.add_trace(go.Bar(
-                        y=[None], x=[None], name=category_props.get("legend_name", category_name),
-                        orientation='h', marker_color=category_props.get("base_color_rgba","rgba(128,128,128,0.5)"),
-                        legendgroup=category_name
+                        y=[None], x=[None], name=category_props_legend.get("legend_name", category_name_legend),
+                        orientation='h', marker_color=category_props_legend.get("base_color_rgba","rgba(128,128,128,0.5)"),
+                        legendgroup=category_name_legend
                     ))
                     continue
 
-                # Map strike_numeric to y_indices for this category's data
-                current_y_indices = [strike_map_for_hline.get(strike_val) for strike_val in category_df['strike_numeric']]
-                # Filter out None if any strike_val wasn't in strike_map (should not happen if plot_df is built correctly)
-                current_y_indices = [y_idx for y_idx in current_y_indices if y_idx is not None]
+                # Extract data for the trace
+                trace_y_indices = [bar['y_index'] for bar in bars_for_this_category_trace]
+                trace_x_scores = [bar['score'] for bar in bars_for_this_category_trace]
+                trace_marker_colors = [bar['final_rgba'] for bar in bars_for_this_category_trace]
 
-                # Ensure other data aligns with these valid y_indices
-                # This requires careful re-alignment of category_df if some y_indices were None
-                # A safer way: iterate through plot_df once, assign colors, then make one bar trace with those colors and y_indices from plot_df
-                # However, for multiple traces (for legend interactivity), we need to filter per category.
+                # Create hover data for this trace's bars
+                # Need to reconstruct a "row-like" dict for _create_hover_text for each bar in this trace
+                # This means fetching the full row from plot_df that corresponds to each bar in bars_for_this_category_trace
+                original_rows_for_trace_hover = []
+                for bar_detail_hover in bars_for_this_category_trace:
+                    # Find the original row in plot_df that matches this bar's strike_numeric
+                    # This is a bit inefficient but necessary if _create_hover_text needs many columns
+                    matching_rows = plot_df[plot_df['strike_numeric'] == bar_detail_hover['strike_numeric']]
+                    if not matching_rows.empty:
+                        original_rows_for_trace_hover.append(matching_rows.iloc[0].to_dict())
+                    else: # Should not happen if logic is correct
+                        original_rows_for_trace_hover.append({'strike_numeric': bar_detail_hover['strike_numeric'], col_elite_score: bar_detail_hover['score']})
 
-                # Re-filter category_df to only include strikes that are in y_labels (and thus have a y_index)
-                valid_strikes_for_cat = [s_num for s_num, s_label in zip(unique_strikes_desc, y_labels) if s_label in y_labels] # essentially unique_strikes_desc
-                category_df_drawable = category_df[category_df['strike_numeric'].isin(valid_strikes_for_cat)].copy()
 
-                # Recalculate y_indices based on the full y_labels list for this category_df_drawable
-                cat_y_indices = [y_labels.index(f"{s_num:.2f}") for s_num in category_df_drawable['strike_numeric'] if f"{s_num:.2f}" in y_labels]
-
-
-                bar_colors_for_trace = [
-                    get_adjusted_color_for_bar(row['score_category'], row['signal_strength_scaled'])
-                    for _, row in category_df_drawable.iterrows()
-                ]
-
-                # Prepare hover data for this specific trace
-                cat_hovers = [self._create_hover_text(r.to_dict(), chart_type="elite_score_display") for _, r in category_df_drawable.iterrows()]
+                trace_hovers = [self._create_hover_text(r, chart_type="elite_score_display") for r in original_rows_for_trace_hover]
+                # Customdata can be simplified if hovertext is pre-generated and has all info.
+                # Or, pass specific fields needed by a potentially simplified hovertemplate if not using _create_hover_text directly per bar.
+                # For now, let's assume _create_hover_text is robust. We need to provide it with enough data.
+                # The `customdata` field in go.Bar is often used with a `hovertemplate` string directly in `fig.add_trace`.
+                # If `hovertext` is used, `customdata` might be redundant unless hovertemplate is also constructed.
+                # The current _create_hover_text generates the full HTML-like string.
 
                 fig.add_trace(go.Bar(
-                    y=cat_y_indices, # Use y_indices corresponding to the strikes in this category
-                    x=category_df_drawable[col_elite_score].values,
-                    name=category_props.get("legend_name", category_name),
+                    y=trace_y_indices,
+                    x=trace_x_scores,
+                    name=category_props_legend.get("legend_name", category_name_legend),
                     orientation='h',
-                    marker_color=bar_colors_for_trace,
-                    customdata=category_df_drawable.drop(columns=[col_elite_score]).to_dict('records'), # Drop score as it's x
-                    hovertext=cat_hovers, # Use pre-generated full hover texts
+                    marker_color=trace_marker_colors,
+                    # customdata=... # If needed for a specific hovertemplate string
+                    hovertext=trace_hovers,
+                    hoverinfo='text', # Indicates that `hovertext` provides the content
+                    legendgroup=category_name_legend
+                ))
+
+            # --- Layout and Final Touches ---
+            legend_cfg = self.config.get("legend_settings", {}) # General legend settings from main config
+            fig.update_layout(
+                title=f"{full_chart_title}{filter_suffix}",
+                    # This is now done in the main loop before calling this helper.
+                    # r_base, g_base, b_base are passed as base_rgb_tuple_param.
+                    pass # Original parsing logic removed as base RGB tuple is now an argument.
+
+                # 1. Adjust opacity based on signal_strength_scaled
+                min_op = OPACITY_SETTINGS.get("min_opacity", 0.3)
+                max_op = OPACITY_SETTINGS.get("max_opacity", 1.0)
+                # Opacity: High strength (1.0) => max_op; Low strength (0.0) => min_op
+                final_opacity = min_op + (max_op - min_op) * strength_scaled
+                final_opacity = max(0.0, min(1.0, final_opacity))
+
+                # 2. Adjust color vividness based on signal_strength_scaled
+                pale_intensity_factor = VIVIDNESS_SETTINGS.get("pale_intensity_factor", 0.4) # How much of original color at low strength
+                target_pale_rgb_str = VIVIDNESS_SETTINGS.get("target_pale_color_rgb", "220,220,220") # Target for paleness
+                try:
+                    r_pale_target, g_pale_target, b_pale_target = map(int, target_pale_rgb_str.split(','))
+                except ValueError:
+                    chart_logger.warning(f"Invalid target_pale_color_rgb '{target_pale_rgb_str}'. Using (220,220,220).")
+                    r_pale_target, g_pale_target, b_pale_target = 220,220,220
+
+                # Effective strength for vividness: interp_strength goes from pale_intensity_factor (at strength_scaled=0) to 1.0 (at strength_scaled=1)
+                # This means at strength_scaled=0, color is pale_intensity_factor * base + (1-pale_intensity_factor) * pale_target
+                # At strength_scaled=1, color is 1.0 * base + 0 * pale_target = base
+                vividness_interp_factor = pale_intensity_factor + (1.0 - pale_intensity_factor) * strength_scaled
+
+                r_final_adj = int(r_base * vividness_interp_factor + r_pale_target * (1 - vividness_interp_factor))
+                g_final_adj = int(g_base * vividness_interp_factor + g_pale_target * (1 - vividness_interp_factor))
+                b_final_adj = int(b_base * vividness_interp_factor + b_pale_target * (1 - vividness_interp_factor))
+
+                r_final_adj, g_final_adj, b_final_adj = max(0,min(255,r_final_adj)), max(0,min(255,g_final_adj)), max(0,min(255,b_final_adj))
+                return f'rgba({r_final_adj},{g_final_adj},{b_final_adj},{final_opacity:.2f})'
+
+            # --- Create Figure and Traces ---
+            # The main loop for processing bars for logging and color calculation is now above this section.
+            # This section now focuses on creating traces from `all_bars_details`.
+
+            fig = go.Figure() # Already initialized earlier if this part is moved
+
+            for category_name_legend, category_props_legend in sorted_legend_categories:
+                # Filter `all_bars_details` for the current category to build the trace
+                bars_for_this_category_trace = [bar_detail for bar_detail in all_bars_details if bar_detail['category_name'] == category_name_legend]
+
+                if not bars_for_this_category_trace:
+                    fig.add_trace(go.Bar(
+                        y=[None], x=[None], name=category_props_legend.get("legend_name", category_name_legend),
+                        orientation='h', marker_color=category_props_legend.get("base_color_rgba","rgba(128,128,128,0.5)"),
+                        legendgroup=category_name_legend
+                    ))
+                    continue
+
+                # Extract data for the trace
+                trace_y_indices = [bar['y_index'] for bar in bars_for_this_category_trace]
+                trace_x_scores = [bar['score'] for bar in bars_for_this_category_trace]
+                trace_marker_colors = [bar['final_rgba'] for bar in bars_for_this_category_trace]
+
+                original_rows_for_trace_hover = []
+                for bar_detail_hover in bars_for_this_category_trace:
+                    matching_rows = plot_df[plot_df['strike_numeric'] == bar_detail_hover['strike_numeric']]
+                    if not matching_rows.empty:
+                        original_rows_for_trace_hover.append(matching_rows.iloc[0].to_dict())
+                    else:
+                        original_rows_for_trace_hover.append({'strike_numeric': bar_detail_hover['strike_numeric'], col_elite_score: bar_detail_hover['score']})
+
+                trace_hovers = [self._create_hover_text(r, chart_type="elite_score_display") for r in original_rows_for_trace_hover]
+
+                fig.add_trace(go.Bar(
+                    y=trace_y_indices,
+                    x=trace_x_scores,
+                    name=category_props_legend.get("legend_name", category_name_legend),
+                    orientation='h',
+                    marker_color=trace_marker_colors,
+                    hovertext=trace_hovers,
                     hoverinfo='text',
-                    legendgroup=category_name # Group bars of same category for legend toggling
+                    legendgroup=category_name_legend
                 ))
 
             # --- Layout and Final Touches ---
