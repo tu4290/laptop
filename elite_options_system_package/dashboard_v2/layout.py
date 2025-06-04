@@ -8,7 +8,8 @@ and enhanced metric descriptions.
 """
 
 import dash_bootstrap_components as dbc
-from dash import dcc, html
+from dash import dcc, html, dash_table
+import pandas as pd
 from typing import Dict, List, Any, Optional
 import plotly.graph_objects as go
 
@@ -38,13 +39,25 @@ def _fallback_get_config_value(keys: List[str], default: Any = None) -> Any:
         ]
     if keys == ["visualization_settings", "mspi_visualizer", "greek_flow_heatmap_default_metric"]:
         return "heuristic_net_delta_pressure" 
+    # Attempt to get darkpool_data for fallback if utils is not available
+    if keys == ['darkpool_data']:
+        print("LAYOUT.PY FALLBACK: Attempting to access darkpool_data directly (likely means APP_CONFIG not available via utils)")
+        # This scenario is tricky as APP_CONFIG itself is usually populated via utils.
+        # If utils.get_config_value is failing, this part of the fallback might not be very effective
+        # unless APP_CONFIG was globally populated in enhanced_dashboard_v2.py and somehow accessible here.
+        # For safety, return the default.
+        return default
     return default
 
 def _fallback_create_empty_figure(title: str = "Waiting for data...", height: Optional[int] = None, reason: Optional[str] = "N/A") -> go.Figure:
     """ Fallback function to create an empty figure if utils.create_empty_figure is unavailable. """
     print(f"LAYOUT.PY WARNING: Using fallback for create_empty_figure with title: {title}")
     fig_height = height if height is not None else 600
-    plotly_template = "plotly_dark"
+    plotly_template = "plotly_dark" # Default template for fallback
+    # Check if PLOTLY_TEMPLATE_DARK is available globally from styling.py, otherwise use the local default
+    if 'PLOTLY_TEMPLATE_DARK' in globals() and isinstance(globals()['PLOTLY_TEMPLATE_DARK'], dict) and 'layout' in globals()['PLOTLY_TEMPLATE_DARK']:
+        plotly_template = globals()['PLOTLY_TEMPLATE_DARK']['layout'].get('template', plotly_template)
+
     fig = go.Figure()
     fig.update_layout(
         title={'text': f"<i>{title} (Utils Not Loaded)<br><small style='color:grey'>Reason: {reason}</small></i>", 'y':0.5, 'x':0.5, 'xanchor': 'center', 'yanchor': 'middle', 'font': {'color': 'grey', 'size': 16}},
@@ -56,16 +69,20 @@ def _fallback_create_empty_figure(title: str = "Waiting for data...", height: Op
     return fig
 
 # --- Attempt Local Imports from .utils and .styling ---
+PLOTLY_TEMPLATE_DARK = "plotly_dark" # Default value, will be overwritten if import is successful
 try:
     from .utils import get_config_value, create_empty_figure
-    from .styling import APP_THEME 
+    from .styling import APP_THEME, PLOTLY_TEMPLATE_DARK as imported_plotly_template
+    PLOTLY_TEMPLATE_DARK = imported_plotly_template # Update with imported template
     utils_styling_available = True
     print("LAYOUT.PY: Successfully imported from .utils and .styling.")
 except ImportError as e:
     print(f"LAYOUT.PY WARNING: Failed to import from .utils or .styling: {e}. Using fallback functions/theme.")
     get_config_value = _fallback_get_config_value
     create_empty_figure = _fallback_create_empty_figure
+    # PLOTLY_TEMPLATE_DARK remains "plotly_dark" (the string, not the dict object)
     utils_styling_available = False
+
 
 # --- Component ID Constants ---
 ID_SYMBOL_INPUT = "symbol-input"
@@ -89,6 +106,7 @@ ID_MODE_TABS = "mode-tabs"
 ID_MODE_CONTENT = "mode-content"
 ID_TAB_MAIN_DASHBOARD = "tab-main-dashboard"
 ID_TAB_SDAG_DIAGNOSTICS = "tab-sdag-diagnostics"
+ID_TAB_DARKPOOL_ANALYSIS = "tab-darkpool-analysis"
 
 
 # --- Chart Configuration: Blurbs ---
@@ -186,9 +204,6 @@ def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
     )
     accordion = dbc.Accordion(accordion_item, start_collapsed=True, flush=True, id=f"accordion-blurb-{chart_id}")
     
-    # The dcc.Graph component ID remains "mspi_heatmap" for the MSPI card,
-    # its figure will be updated by the callback based on ID_MSPI_CHART_TOGGLE_SELECTOR.
-    # For other charts, the chart_id is used directly for the dcc.Graph.
     graph_component_id = chart_id 
     
     card_body_children.append(
@@ -196,7 +211,7 @@ def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
             id=f"loading-{chart_id}", type="circle", color="#007bff", fullscreen=False,
             children=[
                 dcc.Graph(
-                    id=graph_component_id, # Use the determined graph ID
+                    id=graph_component_id,
                     figure=local_create_empty_figure(f"{display_title_accordion} - Loading..."),
                     config={'displayModeBar': True, 'scrollZoom': True, 'responsive': True},
                     className="chart-graph-obj"
@@ -219,8 +234,6 @@ def get_main_dashboard_mode_layout() -> html.Div:
         dbc.Col(create_chart_card("mspi_components", ENHANCED_BLURBS.get("mspi_components", "")), lg=6, md=12, className="chart-column"),
     ], className="mb-3 chart-row"))
     
-    # Row 2: MSPI Heatmap (with toggle) & Net Greek Flow & Pressure Map
-    # The "mspi_heatmap" ID here refers to the dcc.Graph component within the card that has the toggle.
     layout_children.append(dbc.Row([
         dbc.Col(create_chart_card("mspi_heatmap", ENHANCED_BLURBS.get("mspi_heatmap", "")), lg=6, md=12, className="chart-column"),
         dbc.Col(create_chart_card(ID_NET_GREEK_FLOW_HEATMAP_CHART, ENHANCED_BLURBS.get(ID_NET_GREEK_FLOW_HEATMAP_CHART, "")), lg=6, md=12, className="chart-column"),
@@ -249,6 +262,121 @@ def get_sdag_diagnostics_mode_layout() -> html.Div:
             chart_rows.append(dbc.Row(charts_in_current_row, className="mb-3 chart-row"))
             charts_in_current_row = []
     return html.Div(chart_rows)
+
+
+def get_darkpool_mode_layout() -> html.Div:
+    darkpool_data = get_config_value(['darkpool_data'], default={})
+
+    ultra_levels_df = pd.DataFrame()
+    if darkpool_data and isinstance(darkpool_data.get('ultra_levels_df'), pd.DataFrame):
+        ultra_levels_df = darkpool_data['ultra_levels_df']
+
+    methodology_overview_text = "Methodology Overview not available."
+    if darkpool_data and isinstance(darkpool_data.get('methodology_overview_text'), str):
+        methodology_overview_text = darkpool_data['methodology_overview_text']
+
+    methodology_relationships_text = "Methodology Relationships not available."
+    if darkpool_data and isinstance(darkpool_data.get('methodology_relationships_text'), str):
+        methodology_relationships_text = darkpool_data['methodology_relationships_text']
+
+    table_columns = []
+    if not ultra_levels_df.empty:
+        table_columns = [{"name": i, "id": i} for i in ultra_levels_df.columns]
+
+    # --- Create Gamma Concentration Bar Chart ---
+    gamma_chart_figure = create_empty_figure(title="Gamma Concentration by Strike - No Data")
+    if not ultra_levels_df.empty and 'Strike' in ultra_levels_df.columns and 'Gamma Concentration' in ultra_levels_df.columns:
+        try:
+            plot_df = ultra_levels_df.copy() # Avoid modifying the original df from config
+            plot_df['Gamma Concentration'] = pd.to_numeric(plot_df['Gamma Concentration'], errors='coerce')
+            plot_df['Strike'] = plot_df['Strike'].astype(str)
+            plot_df.dropna(subset=['Gamma Concentration'], inplace=True) # Drop rows where conversion failed
+
+            if not plot_df.empty:
+                # Use imported PLOTLY_TEMPLATE_DARK if available (it's a dict), else use the string "plotly_dark"
+                current_template = PLOTLY_TEMPLATE_DARK['layout']['template'] if isinstance(PLOTLY_TEMPLATE_DARK, dict) else PLOTLY_TEMPLATE_DARK
+
+                gamma_chart_figure = go.Figure(data=[
+                    go.Bar(
+                        x=plot_df['Strike'],
+                        y=plot_df['Gamma Concentration'],
+                        text=plot_df['Gamma Concentration'],
+                        textposition='auto',
+                        marker_color='skyblue'
+                    )
+                ])
+                gamma_chart_figure.update_layout(
+                    title_text='Gamma Concentration by Strike (Ultra Darkpool Levels)',
+                    xaxis_title_text='Strike Price',
+                    yaxis_title_text='Gamma Concentration',
+                    template=current_template,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(color='white')
+                )
+        except Exception as e:
+            print(f"Error creating Gamma Concentration chart: {e}")
+            gamma_chart_figure = create_empty_figure(title=f"Gamma Chart Error: {str(e)[:100]}")
+
+
+    return html.Div([
+        html.H3("Darkpool Analysis", className="mb-3"),
+
+        dbc.Card(
+            dbc.CardBody([
+                html.H4("Ultra Darkpool Levels", className="card-title"),
+                dash_table.DataTable(
+                    id='darkpool-ultra-levels-table',
+                    columns=table_columns,
+                    data=ultra_levels_df.to_dict('records') if not ultra_levels_df.empty else [],
+                    page_size=5, # Reduced page size
+                    style_as_list_view=True,
+                    style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold'},
+                    style_cell={
+                        'backgroundColor': 'rgb(50, 50, 50)',
+                        'color': 'white',
+                        'border': '1px solid rgb(70, 70, 70)',
+                        'textAlign': 'left',
+                        'padding': '5px'
+                    },
+                    style_data_conditional=[
+                        { 'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(40, 40, 40)'}
+                    ]
+                ) if not ultra_levels_df.empty else html.P("Ultra Darkpool Levels data is not available or table is empty."),
+            ]), className="mb-4 shadow-sm"
+        ),
+
+        dbc.Card(
+            dbc.CardBody([
+                html.H4("Gamma Concentration Chart", className="card-title"),
+                dcc.Graph(
+                    id='darkpool-gamma-concentration-chart',
+                    figure=gamma_chart_figure
+                )
+            ]), className="mb-4 shadow-sm"
+        ),
+
+        dbc.Row([
+            dbc.Col(
+                dbc.Card(
+                    dbc.CardBody([
+                        html.H4("Methodology Overview", className="card-title"),
+                        dcc.Markdown(methodology_overview_text, className="markdown-content")
+                    ], className="metric-blurb"), # metric-blurb added to CardBody
+                    className="shadow-sm" # shadow-sm remains on Card
+                ), md=6
+            ),
+            dbc.Col(
+                dbc.Card(
+                    dbc.CardBody([
+                        html.H4("Methodology Relationships", className="card-title"),
+                        dcc.Markdown(methodology_relationships_text, className="markdown-content")
+                    ], className="metric-blurb"), # metric-blurb added to CardBody
+                    className="shadow-sm" # shadow-sm remains on Card
+                ), md=6
+            ),
+        ], className="mb-3")
+    ])
 
 
 # --- Main Layout Definition ---
@@ -301,6 +429,7 @@ def get_main_layout() -> dbc.Container:
         [
             dbc.Tab(label="Main Dashboard", tab_id=ID_TAB_MAIN_DASHBOARD, className="fw-bold", active_label_class_name="fw-bolder text-success"),
             dbc.Tab(label="SDAG Diagnostics", tab_id=ID_TAB_SDAG_DIAGNOSTICS, className="fw-bold", active_label_class_name="fw-bolder text-success"),
+            dbc.Tab(label="Darkpool Analysis", tab_id=ID_TAB_DARKPOOL_ANALYSIS, className="fw-bold", active_label_class_name="fw-bolder text-success"),
         ],
         id=ID_MODE_TABS,
         active_tab=ID_TAB_MAIN_DASHBOARD, 
@@ -327,4 +456,4 @@ def get_main_layout() -> dbc.Container:
     )
     return main_app_layout
 
-CHART_IDS = ALL_CHART_IDS_FOR_FACTORY 
+CHART_IDS = ALL_CHART_IDS_FOR_FACTORY

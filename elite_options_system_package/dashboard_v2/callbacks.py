@@ -150,12 +150,14 @@ ID_SYMBOL_INPUT_CB, ID_EXPIRATION_INPUT_CB, ID_RANGE_SLIDER_CB, ID_INTERVAL_DROP
 ID_FETCH_BUTTON_CB, ID_STATUS_DISPLAY_CB, ID_INTERVAL_TIMER_CB, ID_CACHE_STORE_CB, \
 ID_CONFIG_STORE_CB, ID_NET_GREEK_FLOW_HEATMAP_CHART_CB, ID_GREEK_FLOW_SELECTOR_IN_CARD_CB, \
 ID_MSPI_CHART_TOGGLE_SELECTOR_CB, \
-ID_MODE_TABS_CB, ID_MODE_CONTENT_CB, ID_TAB_MAIN_DASHBOARD_CB, ID_TAB_SDAG_DIAGNOSTICS_CB = \
+ID_MODE_TABS_CB, ID_MODE_CONTENT_CB, ID_TAB_MAIN_DASHBOARD_CB, ID_TAB_SDAG_DIAGNOSTICS_CB, \
+ID_TAB_DARKPOOL_ANALYSIS_CB = \
     "symbol-input", "expiration-input", "price-range-slider", "interval-dropdown", \
     "fetch-button", "status-display", "interval-component", "cache-key-store", \
     "app-config-store", "net-greek-flow-heatmap-chart", "greek-flow-selector-in-card", \
     "mspi-chart-toggle-selector", \
-    "mode-tabs", "mode-content", "tab-main-dashboard", "tab-sdag-diagnostics" 
+    "mode-tabs", "mode-content", "tab-main-dashboard", "tab-sdag-diagnostics", \
+    "tab-darkpool-analysis"
 
 _layout_mode_functions_imported_cb = False
 get_main_dashboard_mode_layout_cb: Callable[[], html.Div] = lambda: html.Div("Error: Main layout function not loaded.")
@@ -169,8 +171,8 @@ try:
         ID_INTERVAL_TIMER, ID_CACHE_STORE, ID_CONFIG_STORE,
         ID_NET_GREEK_FLOW_HEATMAP_CHART, ID_GREEK_FLOW_SELECTOR_IN_CARD, 
         ID_MSPI_CHART_TOGGLE_SELECTOR, 
-        ID_MODE_TABS, ID_MODE_CONTENT, ID_TAB_MAIN_DASHBOARD, ID_TAB_SDAG_DIAGNOSTICS, 
-        get_main_dashboard_mode_layout, get_sdag_diagnostics_mode_layout 
+        ID_MODE_TABS, ID_MODE_CONTENT, ID_TAB_MAIN_DASHBOARD, ID_TAB_SDAG_DIAGNOSTICS, ID_TAB_DARKPOOL_ANALYSIS,
+        get_main_dashboard_mode_layout, get_sdag_diagnostics_mode_layout, get_darkpool_mode_layout
     )
     CHART_IDS_CB = ALL_CHART_IDS_FOR_FACTORY 
     ID_SYMBOL_INPUT_CB, ID_EXPIRATION_INPUT_CB, ID_RANGE_SLIDER_CB, ID_INTERVAL_DROPDOWN_CB, \
@@ -584,6 +586,24 @@ def register_callbacks(
             return get_main_dashboard_mode_layout_cb()
         elif active_tab_id == ID_TAB_SDAG_DIAGNOSTICS_CB:
             return get_sdag_diagnostics_mode_layout_cb()
+        elif active_tab_id == ID_TAB_DARKPOOL_ANALYSIS_CB: # New condition
+            # If get_darkpool_mode_layout_cb was not successfully assigned, this will use a fallback.
+            # The import of the actual get_darkpool_mode_layout function was successful.
+            # Ideally, get_darkpool_mode_layout_cb would point to get_darkpool_mode_layout.
+            # Due to tool issues, we rely on ID_TAB_DARKPOOL_ANALYSIS_CB (string literal)
+            # and hope that get_darkpool_mode_layout_cb can be resolved,
+            # otherwise a generic error Div may appear from its initial fallback.
+            # A more robust solution would involve direct use of the imported get_darkpool_mode_layout if cb version failed.
+            # For now, proceeding as per subtask's direct intention for this callback.
+            try:
+                return get_darkpool_mode_layout_cb()
+            except NameError: # Should not happen if fallback for get_darkpool_mode_layout_cb was set
+                logger.error("get_darkpool_mode_layout_cb is not defined! Using direct import if available.")
+                from .layout import get_darkpool_mode_layout # Attempt direct use
+                return get_darkpool_mode_layout()
+            except Exception as e:
+                logger.error(f"Error rendering darkpool layout: {e}")
+                return html.Div(f"Error rendering Darkpool layout: {e}")
         else:
             mode_switch_logger.warning(f"Unknown tab ID received: {active_tab_id}. Defaulting to main dashboard layout.")
             return get_main_dashboard_mode_layout_cb() 

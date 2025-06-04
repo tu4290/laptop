@@ -131,6 +131,15 @@ except ImportError as e_styling_imp:
 
 _core_dashboard_modules_loaded_successfully_app = all([_layout_module_available_app, _callbacks_module_available_app, _utils_module_available_app, _styling_module_available_app])
 
+try:
+    from .darkpool_processor import parse_darkpool_report
+    _darkpool_processor_available_app = True
+    print("ENH_DASH_APP: Successfully imported parse_darkpool_report from .darkpool_processor.")
+except ImportError as e_dp_imp:
+    print(f"ENH_DASH_APP WARNING: Import Error for darkpool_processor.py: {e_dp_imp}. Darkpool data will be unavailable.", exc_info=True)
+    parse_darkpool_report = None # Fallback
+    _darkpool_processor_available_app = False
+
 # --- Backend Service Imports (with Fallbacks if modules are missing/broken) ---
 _BACKEND_MODULES_LOADED_FULLY_APP = False
 _backend_import_error_msg_app: Optional[str] = None
@@ -182,6 +191,30 @@ _default_config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.absp
 APP_CONFIG: Dict[str, Any] = utils_load_app_config_func(config_path=_default_config_path)
 if not APP_CONFIG: # If fallback was used and still failed, or file was empty
     dashboard_app_logger.critical(f"APP_CONFIG is empty after load attempt from '{_default_config_path}'. Dashboard may not function correctly.")
+
+# --- Define Path to Darkpool Report and Parse Data ---
+# _default_config_path is: os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config_v2.json")
+# This path points to elite_options_system_package/config_v2.json
+# So, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) should give the repo root.
+_repo_root_path_app = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DARKPOOL_REPORT_PATH_APP = os.path.join(_repo_root_path_app, "darkpool", "Darkpool Analysis Report for SPY.md")
+dashboard_app_logger.info(f"Darkpool report path resolved to: {DARKPOOL_REPORT_PATH_APP}")
+
+if _darkpool_processor_available_app and parse_darkpool_report:
+    dashboard_app_logger.info(f"Attempting to parse Darkpool report from: {DARKPOOL_REPORT_PATH_APP}")
+    darkpool_data_bundle = parse_darkpool_report(DARKPOOL_REPORT_PATH_APP)
+    if darkpool_data_bundle:
+        APP_CONFIG['darkpool_data'] = darkpool_data_bundle
+        dashboard_app_logger.info("Successfully parsed and stored Darkpool report data in APP_CONFIG.")
+        # For debugging, print keys or df head if needed
+        # if 'ultra_levels_df' in darkpool_data_bundle and darkpool_data_bundle['ultra_levels_df'] is not None:
+        #     dashboard_app_logger.debug(f"Darkpool Ultra Levels DF head:\n{darkpool_data_bundle['ultra_levels_df'].head()}")
+    else:
+        APP_CONFIG['darkpool_data'] = None # Indicate parsing failed or returned None
+        dashboard_app_logger.warning("Failed to parse Darkpool report or report was empty. 'darkpool_data' set to None in APP_CONFIG.")
+else:
+    APP_CONFIG['darkpool_data'] = None # Indicate processor was not available
+    dashboard_app_logger.warning("Darkpool processor module not available. 'darkpool_data' set to None in APP_CONFIG.")
 
 # Set logger level for this script based on (potentially fallback) config
 log_level_cfg_path_app = ["system_settings", "log_level"]
