@@ -36,7 +36,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("DashboardRunnerV2.1")
 
-DEFAULT_CONFIG_FILENAME = "config_v2.json"
+# Determine the directory of the script itself
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CONFIG_FILENAME = os.path.join(_SCRIPT_DIR, "config_v2.json")
+DEFAULT_ENV_FILENAME = os.path.join(_SCRIPT_DIR, ".env")
 
 PYTHON_PACKAGES = [
     "dash", "pandas", "numpy", "plotly", "requests",
@@ -145,7 +148,20 @@ def check_python_packages(packages: List[str]) -> bool:
 
 def check_environment_variables(config: Dict[str, Any]) -> Tuple[bool, Optional[str], Optional[str]]:
     logger.info("Checking API credentials...");
-    try: from dotenv import load_dotenv; env_path = load_dotenv(verbose=True); logger.info(f"Loaded .env file: {env_path}" if env_path else "No .env file or empty.")
+    try:
+        from dotenv import load_dotenv
+        # Load .env file from the script's directory
+        env_path = DEFAULT_ENV_FILENAME
+        if os.path.exists(env_path):
+            loaded_custom_env = load_dotenv(dotenv_path=env_path, verbose=True)
+            logger.info(f"Loaded .env file ('{env_path}'): {loaded_custom_env}")
+        else:
+            logger.info(f".env file not found at '{env_path}'. Relying on system environment variables or config for API creds.")
+            # Attempt to load .env from CWD or standard locations as a fallback, though less reliable with `python -m`
+            loaded_standard_env = load_dotenv(verbose=True)
+            if loaded_standard_env:
+                 logger.info(f"Loaded .env from standard location: {loaded_standard_env}")
+
     except ImportError: logger.warning("'python-dotenv' not found. Cannot load .env. Install with 'pip install python-dotenv'.")
     except Exception as e_dot: logger.warning(f"Error loading .env: {e_dot}")
     api_cfg = config.get("api_credentials",{}); email_var=api_cfg.get("email_env_var","CONVEX_EMAIL"); pass_var=api_cfg.get("password_env_var","CONVEX_PASSWORD")

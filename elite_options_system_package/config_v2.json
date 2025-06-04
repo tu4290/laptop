@@ -21,7 +21,7 @@
     }
   },
   "runner_settings": {
-    "dashboard_module_path": "dashboard_v2.enhanced_dashboard_v2"
+    "dashboard_module_path": "elite_options_system_package.dashboard_v2.enhanced_dashboard_v2"
   },
   "api_credentials": {
     "email_env_var": "CONVEX_EMAIL",

@@ -22,6 +22,22 @@ if not logging.getLogger().hasHandlers():
     )
 logger = logging.getLogger(__name__)
 
+# Elite Impact Calculator Imports
+try:
+    from .elite_impact_calculations import (
+        EliteImpactCalculator, EliteConfig,
+        ConvexValueColumns, EliteImpactColumns
+    )
+    elite_impact_module_available = True
+    logger.info("PROCESSOR: Successfully imported EliteImpactCalculator and related components.")
+except ImportError as e_imp_elite:
+    elite_impact_module_available = False
+    EliteImpactCalculator = None # Define for type hinting if needed
+    EliteConfig = None
+    ConvexValueColumns = None
+    EliteImpactColumns = None
+    logger.error(f"PROCESSOR IMPORT ERROR: Could not import EliteImpactCalculator: {e_imp_elite}. Elite calculations will be skipped.")
+
 # --- Constants ---
 # For HEURISTIC pressure calculations (your original method)
 HEURISTIC_PRESSURE_REQUIRED_COLS: List[str] = ["opt_kind", "strike", "volm_buy", "volm_sell", "value_buy", "value_sell"]
@@ -125,6 +141,19 @@ class EnhancedDataProcessor:
         self.trading_system_instance: Union[ImportedITS, IntegratedTradingSystemDummy] # type: ignore
         self._initialize_trading_system_instance()
         self._ensure_processed_output_dir_exists()
+
+        # Initialize Elite Impact Calculator
+        if elite_impact_module_available and EliteImpactCalculator and EliteConfig:
+            try:
+                self.elite_calculator = EliteImpactCalculator(EliteConfig()) # Using default config for now
+                init_logger.info("EliteImpactCalculator instance created successfully.")
+            except Exception as e_init_elite_calc:
+                self.elite_calculator = None
+                init_logger.error(f"Failed to instantiate EliteImpactCalculator: {e_init_elite_calc}", exc_info=True)
+        else:
+            self.elite_calculator = None
+            init_logger.warning("EliteImpactCalculator not available or not imported. Elite calculations will be skipped.")
+
         init_logger.info("EnhancedDataProcessor V2.0.7 Initialized.")
     def _load_main_config_for_processor(self) -> Dict[str, Any]:
         load_cfg_logger = logger.getChild("ProcessorConfigLoad"); load_cfg_logger.debug(f"Loading FULL application configuration from: {self.config_path}")
@@ -454,8 +483,65 @@ class EnhancedDataProcessor:
         except Exception as e_flow_calc:
             flow_err_str = f"All flow/pressure metric calculation failed: {e_flow_calc}"; logger.error(f"Processor ({sym_proc}): {flow_err_str}", exc_info=True)
             overall_err = f"{overall_err} | {flow_err_str}".strip(" | ") if overall_err else flow_err_str
+            # Store the potentially modified df_with_all_flows even if flow calculation fails, might have partial results
+            # However, the original instruction implies returning if this step fails, so we keep that.
             return self._package_results(sym_proc,fetch_ts_proc,current_work_df,{},{},[],underlying_data,volatility_data,None,overall_err,self.processor_config)
         
+        # --- Elite Impact Calculation Step ---
+        if self.elite_calculator and isinstance(df_with_all_flows, pd.DataFrame) and not df_with_all_flows.empty:
+            logger.info(f"Processor ({sym_proc}): Attempting Elite Impact Calculations...")
+            try:
+                current_price_for_elite = underlying_data.get("price") if isinstance(underlying_data, dict) else None
+                if current_price_for_elite is None and 'price' in df_with_all_flows.columns and not df_with_all_flows.empty:
+                    current_price_for_elite = df_with_all_flows['price'].iloc[0] # Fallback to price column in df
+
+                market_data_for_elite_calc = None
+                if isinstance(historical_ohlc_df, pd.DataFrame) and not historical_ohlc_df.empty and 'close' in historical_ohlc_df.columns:
+                    if len(historical_ohlc_df) >= 21: # Need enough data for rolling calculations
+                        market_data_for_elite_calc = pd.DataFrame({
+                            'price': historical_ohlc_df['close'],
+                            'volatility': historical_ohlc_df['close'].pct_change().rolling(window=20).std() * np.sqrt(252) # Example 20-day vol
+                        })
+                        # Fill NaNs carefully
+                        market_data_for_elite_calc.fillna(method='bfill', inplace=True)
+                        market_data_for_elite_calc.fillna(method='ffill', inplace=True)
+                        market_data_for_elite_calc.dropna(inplace=True)
+                        if market_data_for_elite_calc.empty:
+                            logger.warning(f"Processor ({sym_proc}): Market data for elite calc became empty after processing NaNs. Proceeding without it.")
+                            market_data_for_elite_calc = None
+                    else:
+                        logger.warning(f"Processor ({sym_proc}): Not enough historical OHLC data ({len(historical_ohlc_df)} rows) for market regime input to Elite Calculator. Proceeding without it.")
+
+                if current_price_for_elite is not None:
+                    # Ensure options_df for elite_calculator has the columns it expects (e.g. from ConvexValueColumns)
+                    # This might involve renaming or ensuring columns exist.
+                    # For now, assume df_with_all_flows is sufficiently compatible or EliteImpactCalculator handles missing columns.
+                    df_with_elite_calcs = self.elite_calculator.calculate_elite_impacts(
+                        options_df=df_with_all_flows.copy(), # Pass a copy
+                        current_price=float(current_price_for_elite),
+                        market_data=market_data_for_elite_calc
+                    )
+                    if isinstance(df_with_elite_calcs, pd.DataFrame) and not df_with_elite_calcs.empty:
+                        logger.info(f"Processor ({sym_proc}): Elite Impact Calculations successful. DataFrame shape: {df_with_elite_calcs.shape}")
+                        # Replace df_with_all_flows with the enriched dataframe
+                        df_with_all_flows = df_with_elite_calcs
+                    else:
+                        logger.warning(f"Processor ({sym_proc}): Elite Impact Calculations did not return a valid DataFrame. Proceeding with previous data.")
+                else:
+                    logger.warning(f"Processor ({sym_proc}): Current price for elite calculator is None. Skipping elite calculations.")
+
+            except Exception as e_elite_calc:
+                elite_err_str = f"Elite Impact Calculation failed: {e_elite_calc}"
+                logger.error(f"Processor ({sym_proc}): {elite_err_str}", exc_info=True)
+                overall_err = f"{overall_err if overall_err else ''} | {elite_err_str}".strip(" | ")
+                # Do not return here, proceed with potentially non-enriched df_with_all_flows
+        else:
+            if not self.elite_calculator:
+                logger.info(f"Processor ({sym_proc}): Elite calculator not available, skipping elite calculations.")
+            else:
+                logger.info(f"Processor ({sym_proc}): Input DataFrame for elite calculations is invalid or empty. Skipping.")
+        # --- End of Elite Impact Calculation Step ---
+
         final_metric_rich_df, lvls_its, sigs_its, recs_list, atr_val_used, its_err = self._apply_integrated_strategies(df_after_pressure_calc=df_with_all_flows, underlying_data_bundle_from_fetcher=underlying_data or {}, volatility_data_for_its=volatility_data or {}, historical_ohlc_data_for_atr=historical_ohlc_df, symbol_str_context=sym_proc)
         if its_err: overall_err = f"{overall_err if overall_err else ''} | {its_err}".strip(" | ")
         final_bundle = self._package_results(sym_proc,fetch_ts_proc,final_metric_rich_df,lvls_its,sigs_its,recs_list,underlying_data,volatility_data,atr_val_used,overall_err,self.processor_config)

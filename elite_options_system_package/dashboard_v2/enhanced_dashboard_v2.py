@@ -149,11 +149,11 @@ IntegratedTradingSystem_Class: Any = _FallbackITS
 MSPIVisualizerV2_Class: Any = _FallbackVisualizer
 
 try:
-    from enhanced_data_fetcher_v2 import EnhancedDataFetcher_v2
-    from enhanced_tradier_fetcher_v2 import TradierDataFetcher
-    from enhanced_data_processor_v2 import EnhancedDataProcessor
-    from integrated_strategies_v2 import IntegratedTradingSystem
-    from mspi_visualizer_v2 import MSPIVisualizerV2
+    from elite_options_system_package.enhanced_data_fetcher_v2 import EnhancedDataFetcher_v2
+    from elite_options_system_package.enhanced_tradier_fetcher_v2 import TradierDataFetcher
+    from elite_options_system_package.enhanced_data_processor_v2 import EnhancedDataProcessor
+    from elite_options_system_package.integrated_strategies_v2 import IntegratedTradingSystem
+    from elite_options_system_package.mspi_visualizer_v2 import MSPIVisualizerV2
     EnhancedDataFetcher_v2_Class = EnhancedDataFetcher_v2
     TradierDataFetcher_Class = TradierDataFetcher
     EnhancedDataProcessor_Class = EnhancedDataProcessor
