@@ -182,11 +182,11 @@ def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
                 )
             ], className="mb-2")
         )
-    elif chart_id == "mspi_components": # This is the card we are reverting
-        display_title_accordion = "MSPI Components" # Reverted title
+    elif chart_id == "mspi_components": # This is the card we are re-purposing
+        display_title_accordion = "Elite Impact Score" # New title
         # NO dropdown is added here now.
         # graph_component_id will correctly be "mspi_components" via the default assignment earlier in the function.
-        blurb_html = ENHANCED_BLURBS.get("mspi_components", "") # Ensure blurb is still correctly assigned
+        blurb_html = ENHANCED_BLURBS.get("mspi_components", "Detailed analysis of Elite Impact Scores, confidence, and signal strength across strikes.") # Or a more generic blurb if "mspi_components" blurb is too specific. For now, using the existing key is fine.
 
     # Common logic for accordion and graph loading remains after this conditional block
     accordion_item = dbc.AccordionItem(

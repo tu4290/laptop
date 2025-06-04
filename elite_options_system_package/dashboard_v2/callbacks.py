@@ -477,7 +477,7 @@ def register_callbacks(
                 "mspi_heatmap": "create_mspi_heatmap", 
                 "net_volume_pressure_heatmap": "create_net_volume_pressure_heatmap", 
                 "net_value_heatmap": "create_net_value_heatmap",
-                "mspi_components": "create_component_comparison", "net_volval_comp": "create_volval_comparison",
+                "mspi_components": "create_elite_impact_score_chart", "net_volval_comp": "create_volval_comparison",
                 "combined_rolling_flow_chart": "create_combined_rolling_flow_chart",
                 ID_NET_GREEK_FLOW_HEATMAP_CHART_CB: "create_net_greek_flow_heatmap",
                 "volatility_regime": "create_volatility_regime_visualization", "time_decay": "create_time_decay_visualization",
