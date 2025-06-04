@@ -1829,82 +1829,86 @@ class MSPIVisualizerV2:
 
     def create_elite_impact_score_chart(
         self,
-        processed_data: pd.DataFrame,
+        processed_data: pd.DataFrame, # Expects strike-level data from processor
         symbol: str = "N/A",
         current_price: Optional[float] = None,
         fetch_timestamp: Optional[str] = None,
         selected_price_range_pct_override: Optional[float] = None,
         **kwargs
     ) -> go.Figure:
+        """
+        Generates a bar chart for Elite Impact Scores, with bars categorized and colored
+        by score magnitude, and opacity/vividness adjusted by signal strength.
+        Uses multiple traces for an interactive legend. Sourced from config.
+        """
         chart_name = "Elite Impact Score Chart"
-        chart_title_part = "Elite Impact Score by Strike"
+        chart_title_part = "Elite Impact Score by Strike (Configurable)"
         full_chart_title = f"<b>{symbol.upper()}</b> - {chart_title_part}"
         chart_logger = self.instance_logger.getChild(chart_name)
         chart_logger.info(f"Creating {full_chart_title} for {symbol}.")
 
-        fig_height = self.config.get("default_chart_height", 700)
+        fig_height = self.config.get("default_chart_height", 700) # Or a specific height for this chart
         plotly_template = self.config.get("plotly_template", "plotly_dark")
 
-        # Define column names from EliteImpactColumns (assuming they are available via self or imported)
-        # For safety, use string literals if EliteImpactColumns isn't directly accessible here
-        # or ensure it's imported and available.
-        # For this subtask, we'll assume string literals matching the actual column names.
-        col_elite_score = "elite_impact_score"
-        col_confidence = "prediction_confidence"
-        col_signal_strength = "signal_strength"
-        # self.col_strike and self.col_opt_kind are already defined in __init__
+        # --- Configuration Loading ---
+        # Default config structure for this chart, to be merged with main config
+        DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL = {
+            "score_categories": {
+                "Strong Positive": {"min_score": 0.75, "base_color_rgba": "rgba(0,100,0,1)", "legend_name": "Strong Pos (Score >= 0.75)"},
+                "Moderate Positive": {"min_score": 0.25, "base_color_rgba": "rgba(0,128,0,1)", "legend_name": "Mod Pos (0.25 <= Score < 0.75)"},
+                "Weak Positive": {"min_score": 0.0, "base_color_rgba": "rgba(144,238,144,1)", "legend_name": "Weak Pos (0.0 <= Score < 0.25)"},
+                "Weak Negative": {"min_score": -0.25, "base_color_rgba": "rgba(250,128,114,1)", "legend_name": "Weak Neg (-0.25 <= Score < 0.0)"},
+                "Moderate Negative": {"min_score": -0.75, "base_color_rgba": "rgba(220,20,60,1)", "legend_name": "Mod Neg (-0.75 <= Score < -0.25)"},
+                "Strong Negative": {"min_score": -float('inf'), "base_color_rgba": "rgba(139,0,0,1)", "legend_name": "Strong Neg (Score < -0.75)"}
+            },
+            "visual_adjustments": { # Renamed from opacity_signal_strength_scaling and color_vividness_signal_strength_scaling
+                "opacity_by_signal_strength": {"min_opacity": 0.3, "max_opacity": 1.0},
+                "vividness_by_signal_strength": {"pale_intensity_factor": 0.4, "target_pale_color_rgb": "220,220,220"} # Factor for base color, target for interpolation
+            },
+            "column_names": { # Added to make it self-contained if needed, though processor usually aligns
+                "elite_score": "elite_impact_score",
+                "signal_strength": "signal_strength"
+                # 'prediction_confidence' is no longer directly used for primary visual encoding but can be in hover
+            },
+            "price_range_filter_default_pct": 10.0 # Default for this chart if not overridden
+        }
 
-        # Helper function to parse RGB strings from config
-        def _parse_rgb_from_config_str(rgb_config_str: Optional[str], default_rgb_tuple: Tuple[int, int, int]) -> Tuple[int, int, int]:
-            if isinstance(rgb_config_str, str):
-                parts = [p.strip() for p in rgb_config_str.split(',')]
-                if len(parts) == 3:
-                    try:
-                        return tuple(int(p) for p in parts)
-                    except ValueError:
-                        chart_logger.warning(f"EliteScoreChart: Could not parse RGB string '{rgb_config_str}'. Using default {default_rgb_tuple}.")
-                        # Fall through to default by not returning here
-                else:
-                    chart_logger.warning(f"EliteScoreChart: RGB string '{rgb_config_str}' does not have 3 parts. Using default {default_rgb_tuple}.")
-            return default_rgb_tuple
+        # Use _get_config_value to fetch 'elite_score_chart_config' from the main application config
+        # The path should be relative to the root of the application config structure.
+        # Example: if main config has {"charts": {"elite_score_settings": {...}}}, path is ["charts", "elite_score_settings"]
+        # For this example, assuming it's at top level: ["elite_score_chart_config"]
 
-        visual_settings_config_path = ["elite_score_chart_config", "visual_settings"]
-        # Ensure self.config (visualizer specific config) is checked first, then self.full_app_config by _get_config_value
-        visual_settings = self._get_config_value(visual_settings_config_path, {})
-        chart_logger.info(f"EliteScoreChart: Loaded visual_settings from config: {visual_settings}")
-        if not isinstance(visual_settings, dict) or not visual_settings: # Check if it's a dict and non-empty
-            chart_logger.warning("EliteScoreChart: visual_settings not found or empty in config. Using hardcoded defaults for visuals.")
-            visual_settings = {} # Ensure visual_settings is a dict to prevent .get errors later
+        # First, try to get the whole 'elite_score_chart_config' block
+        loaded_chart_config_block = self._get_config_value(["elite_score_chart_config"], default_override=None)
 
-        # Color definitions (RGB tuples) - Sourced from config with fallbacks
-        STRONG_POS_VIVID_GREEN_RGB = _parse_rgb_from_config_str(visual_settings.get("strong_positive_color_rgb"), (0, 180, 0))
-        MODERATE_POS_PALE_GREEN_RGB = _parse_rgb_from_config_str(visual_settings.get("moderate_positive_color_rgb"), (144, 238, 144))
-        NEUTRAL_POS_BLUE_RGB = _parse_rgb_from_config_str(visual_settings.get("neutral_positive_color_rgb"), (135, 206, 250))
-        NEUTRAL_NEG_ORANGE_RGB = _parse_rgb_from_config_str(visual_settings.get("neutral_negative_color_rgb"), (255, 165, 0))
-        MODERATE_NEG_PALE_RED_RGB = _parse_rgb_from_config_str(visual_settings.get("moderate_negative_color_rgb"), (250, 128, 114))
-        STRONG_NEG_VIVID_RED_RGB = _parse_rgb_from_config_str(visual_settings.get("strong_negative_color_rgb"), (220, 20, 60))
+        # Deep merge the loaded config with the method-level default
+        if isinstance(loaded_chart_config_block, dict):
+            final_chart_config = self._deep_merge_dicts(DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL.copy(), loaded_chart_config_block)
+            chart_logger.info("Successfully merged 'elite_score_chart_config' from application config with method defaults.")
+        else:
+            final_chart_config = DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL.copy()
+            chart_logger.info("Using method-level default 'elite_score_chart_config' as it was not found or invalid in application config.")
 
-        # Score thresholds for color transitions - Sourced from config with fallbacks
-        score_threshold_strong_positive = visual_settings.get("score_threshold_strong_positive", 0.75)
-        score_threshold_moderate_positive = visual_settings.get("score_threshold_moderate_positive", 0.25)
-        score_threshold_strong_negative = visual_settings.get("score_threshold_strong_negative", -0.75)
-        score_threshold_moderate_negative = visual_settings.get("score_threshold_moderate_negative", -0.25)
+        SCORE_CATEGORIES = final_chart_config.get("score_categories", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["score_categories"])
+        VISUAL_ADJUSTMENTS = final_chart_config.get("visual_adjustments", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["visual_adjustments"])
+        OPACITY_SETTINGS = VISUAL_ADJUSTMENTS.get("opacity_by_signal_strength", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["visual_adjustments"]["opacity_by_signal_strength"])
+        VIVIDNESS_SETTINGS = VISUAL_ADJUSTMENTS.get("vividness_by_signal_strength", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["visual_adjustments"]["vividness_by_signal_strength"])
+        CHART_COL_NAMES = final_chart_config.get("column_names", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["column_names"])
+        PRICE_FILTER_DEFAULT_PCT = final_chart_config.get("price_range_filter_default_pct", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["price_range_filter_default_pct"])
 
-        # Opacity parameters & signal_strength fillna - Sourced from config with fallbacks
-        min_opacity_for_strong_signal = visual_settings.get("min_opacity_for_strong_signal", 0.3)
-        max_opacity_for_weak_signal = visual_settings.get("max_opacity_for_weak_signal", 0.9)
-        default_signal_strength_fillna_for_visuals = visual_settings.get("default_signal_strength_fillna_for_visuals", 0.0)
+        col_elite_score = CHART_COL_NAMES.get("elite_score", "elite_impact_score")
+        col_signal_strength = CHART_COL_NAMES.get("signal_strength", "signal_strength")
+        # self.col_strike is already defined in __init__
 
         try:
             if not isinstance(processed_data, pd.DataFrame) or processed_data.empty:
                 return self._create_empty_figure(f"{symbol} - {chart_name}: No Data Provided", height=fig_height, reason="Input DataFrame empty/invalid")
 
-            required_cols_for_chart = [self.col_strike, col_elite_score, col_confidence, col_signal_strength]
-            # opt_kind might not be strictly necessary if scores are per-strike, but good for hover context
-            if self.col_opt_kind not in processed_data.columns:
-                # If opt_kind is missing, we might need to aggregate strikes differently or simplify hover
-                chart_logger.warning(f"'{self.col_opt_kind}' column missing. Elite scores will be aggregated per strike.")
-                # Add self.col_opt_kind to required_cols if you intend to use it for hover differentiation
+            # Ensure required columns exist (strike from self, score & strength from config)
+            # Note: 'prediction_confidence' is no longer essential for core visuals but useful for hover
+            required_cols_for_chart = [self.col_strike, col_elite_score, col_signal_strength]
+            if 'prediction_confidence' in processed_data.columns: # Optional for hover
+                required_cols_for_chart.append('prediction_confidence')
 
             df_cleaned, _ = self._ensure_columns(processed_data.copy(), required_cols_for_chart, chart_name)
 
@@ -1916,51 +1920,57 @@ class MSPIVisualizerV2:
             df = df_cleaned
             df['strike_numeric'] = pd.to_numeric(df[self.col_strike], errors='coerce')
             df[col_elite_score] = pd.to_numeric(df[col_elite_score], errors='coerce')
-            df[col_confidence] = pd.to_numeric(df[col_confidence], errors='coerce').fillna(0.5) # Default confidence
-            df[col_signal_strength] = pd.to_numeric(df[col_signal_strength], errors='coerce').fillna(0.0)
+
+            # Handle signal_strength: fillna with 0, then clip to [0,1] after min-max scaling
+            if col_signal_strength not in df.columns:
+                chart_logger.warning(f"'{col_signal_strength}' column missing. Using 0.5 for all signal strengths.")
+                df[col_signal_strength] = 0.5 # Default if missing
+            df[col_signal_strength] = pd.to_numeric(df[col_signal_strength], errors='coerce').fillna(0.0) # Fill NA with 0 before scaling
 
             df = df.dropna(subset=['strike_numeric', col_elite_score])
             if df.empty:
                 return self._create_empty_figure(f"{symbol} - {chart_name}: No Valid Data After Cleaning", height=fig_height, reason="No valid data after initial cleaning")
 
-            # Aggregate scores per strike (e.g., average or first if multiple options per strike)
-            # Elite scores are typically one per strike, but let's aggregate robustly.
-            agg_functions = {
-                col_elite_score: 'mean', # Or 'first' if only one expected
-                col_confidence: 'mean',
-                col_signal_strength: 'mean'
-            }
-            # Add other hover context columns to agg_functions if needed
+            # Aggregate scores per strike if multiple options per strike (usually not the case for elite scores)
+            agg_functions: Dict[str, Any] = {col_elite_score: 'mean', col_signal_strength: 'mean'}
+            if 'prediction_confidence' in df.columns: agg_functions['prediction_confidence'] = 'mean'
+
+            # Add other hover context columns to agg_functions (from general hover config)
             overview_metrics_cfg = self.config.get("hover_settings", {}).get("overview_metrics_config", [])
-            column_names_map = self.config.get("column_names", {})
+            app_col_names_map = self.config.get("column_names", {}) # App-level column name mapping
             for m_cfg in overview_metrics_cfg:
                 cfg_key = m_cfg.get("key")
                 if cfg_key:
-                    actual_col_for_hover = column_names_map.get(cfg_key, cfg_key)
+                    actual_col_for_hover = app_col_names_map.get(cfg_key, cfg_key)
                     if actual_col_for_hover in df.columns and actual_col_for_hover not in agg_functions and actual_col_for_hover != 'strike_numeric':
                         agg_functions[actual_col_for_hover] = 'first'
-
-            if self.col_opt_kind in df.columns and self.col_opt_kind not in agg_functions: # If opt_kind exists, take first for hover
-                 agg_functions[self.col_opt_kind] = 'first'
-
+            if self.col_opt_kind in df.columns and self.col_opt_kind not in agg_functions:
+                 agg_functions[self.col_opt_kind] = 'first' # For hover context
 
             agg_data = df.groupby('strike_numeric', as_index=False).agg(agg_functions)
 
-            # --- Price Range Filtering Logic (similar to _create_raw_greek_chart) ---
+            # Scale signal_strength to [0, 1] for opacity and color intensity adjustments
+            min_raw_strength = agg_data[col_signal_strength].min()
+            max_raw_strength = agg_data[col_signal_strength].max()
+            if max_raw_strength == min_raw_strength: # Avoid division by zero
+                agg_data['signal_strength_scaled'] = 0.5 if max_raw_strength is not None else 0.0
+            else:
+                agg_data['signal_strength_scaled'] = (agg_data[col_signal_strength] - min_raw_strength) / (max_raw_strength - min_raw_strength)
+            agg_data['signal_strength_scaled'] = agg_data['signal_strength_scaled'].fillna(0.0).clip(0.0, 1.0)
+            chart_logger.debug(f"Elite Impact Score chart: First 5 scaled signal_strengths: {agg_data['signal_strength_scaled'].head().tolist()}")
+
+
+            # --- Price Range Filtering ---
             filtered_df = agg_data.copy()
             filter_suffix = ""
-            default_range_pct = self.config.get("chart_specific_params", {}).get("raw_greek_charts_price_range_pct", 7.5) # Reuse existing config key or create new
-
-            selected_pct_to_use = selected_price_range_pct_override if isinstance(selected_price_range_pct_override, (int, float)) and pd.notna(selected_price_range_pct_override) and selected_price_range_pct_override > 0 else default_range_pct
+            selected_pct_to_use = selected_price_range_pct_override if isinstance(selected_price_range_pct_override, (int, float)) and pd.notna(selected_price_range_pct_override) and selected_price_range_pct_override > 0 else PRICE_FILTER_DEFAULT_PCT
 
             if current_price is not None and pd.notna(current_price) and current_price > 0:
                 min_s = current_price * (1 - (selected_pct_to_use / 100.0))
                 max_s = current_price * (1 + (selected_pct_to_use / 100.0))
                 filtered_df = agg_data[(agg_data['strike_numeric'] >= min_s) & (agg_data['strike_numeric'] <= max_s)].copy()
                 filter_suffix = f" (Strikes +/- {selected_pct_to_use:.1f}%)"
-                if filtered_df.empty:
-                    chart_logger.warning(f"{chart_name}: DataFrame empty after price range filter for {symbol}.")
-            # --- End of Price Range Filtering ---
+                if filtered_df.empty: chart_logger.warning(f"{chart_name}: DataFrame empty after price range filter for {symbol}.")
 
             if filtered_df.empty:
                  return self._create_empty_figure(f"{symbol} - {chart_name}: No Data in Selected Range {filter_suffix}", height=fig_height, reason=f"No data for range {filter_suffix}")
@@ -1969,142 +1979,163 @@ class MSPIVisualizerV2:
             if not unique_strikes_desc:
                 return self._create_empty_figure(f"{symbol} - {chart_name}: No Unique Strikes After Filtering", height=fig_height, reason="No strikes left for plot")
 
-            # Reindex to ensure all unique_strikes_desc are present for plotting
             plot_df = filtered_df.set_index('strike_numeric').reindex(unique_strikes_desc).reset_index()
+            chart_logger.info(f"EliteScoreChart: plot_df head for coloring (first 3 rows):\n{plot_df[[col_elite_score, 'signal_strength_scaled']].head(3).to_string()}")
 
-            # Make sure these columns actually exist in plot_df at this stage
-            cols_to_log = ['strike_numeric', col_elite_score, col_confidence, col_signal_strength]
-            # If self.col_strike is different from 'strike_numeric' and is expected in plot_df, add it.
-            # Assuming 'strike_numeric' is the primary key after aggregation for plot_df.
-            # If self.col_strike represents the original strike column name before numeric conversion and it's still in plot_df,
-            # you might want to log it too, but the prompt implies 'strike_numeric' is what's in plot_df.
-            if self.col_strike in plot_df.columns and self.col_strike not in cols_to_log:
-                cols_to_log.insert(0, self.col_strike) # Add original strike name if it exists and differs
+            # --- Categorize scores ---
+            def get_score_category(score_val):
+                # Iterate in defined order (e.g., strong pos to strong neg)
+                # Assumes SCORE_CATEGORIES is ordered appropriately if iteration order matters for assignment
+                # For multiple matches (e.g. score = 0.0 might match "Weak Positive" min_score:0.0 and "Weak Negative" min_score:-0.25 if logic is score >= min_score)
+                # The first category in SCORE_CATEGORIES that satisfies score >= min_score will be chosen.
+                # Consider sorting SCORE_CATEGORIES by min_score descending to ensure correct categorization.
 
-            existing_cols_in_plot_df_for_log = [c for c in cols_to_log if c in plot_df.columns]
-            if existing_cols_in_plot_df_for_log: # Only log if there are columns to show
-                chart_logger.info(f"EliteScoreChart: plot_df head for coloring (first 5 rows):\n{plot_df[existing_cols_in_plot_df_for_log].head().to_string()}")
-            else:
-                chart_logger.warning("EliteScoreChart: None of the specified columns for logging head were found in plot_df.")
+                # Sort categories by min_score descending to ensure correct bucketing for "greater than or equal to" logic
+                sorted_categories = sorted(SCORE_CATEGORIES.items(), key=lambda item: item[1]['min_score'], reverse=True)
 
+                for cat_name, props in sorted_categories:
+                    if score_val >= props["min_score"]:
+                        return cat_name
+                # Fallback if no category matches (should ideally not happen with a -inf category)
+                return list(SCORE_CATEGORIES.keys())[-1] if SCORE_CATEGORIES else "Uncategorized"
+
+
+            plot_df['score_category'] = plot_df[col_elite_score].apply(get_score_category)
+            chart_logger.debug(f"Elite Impact Score chart: Value counts for score_category:\n{plot_df['score_category'].value_counts()}")
+
+            # --- Helper function for color and opacity adjustments ---
+            def get_adjusted_color_for_bar(category_name: str, strength_scaled: float) -> str:
+                category_props = SCORE_CATEGORIES.get(category_name)
+                if not category_props: return "rgba(128,128,128,0.5)" # Default grey if category not found
+
+                base_color_str = category_props.get("base_color_rgba", "rgba(128,128,128,1)")
+
+                try: # Parse base RGBA string (e.g., "rgba(0,100,0,1)")
+                    parsed_color = self._parse_color_string(base_color_str, default_opacity=1.0) # Use existing helper
+                    r_base, g_base, b_base, a_base_original = map(float, parsed_color.strip('rgba()').split(','))
+                except Exception as e_parse:
+                    chart_logger.error(f"Could not parse base_color_rgba: '{base_color_str}' for category '{category_name}'. Error: {e_parse}. Using fallback black.")
+                    r_base, g_base, b_base, a_base_original = 0,0,0,1
+
+                # 1. Adjust opacity based on signal_strength_scaled
+                min_op = OPACITY_SETTINGS.get("min_opacity", 0.3)
+                max_op = OPACITY_SETTINGS.get("max_opacity", 1.0)
+                # Opacity: High strength (1.0) => max_op; Low strength (0.0) => min_op
+                final_opacity = min_op + (max_op - min_op) * strength_scaled
+                final_opacity = max(0.0, min(1.0, final_opacity))
+
+                # 2. Adjust color vividness based on signal_strength_scaled
+                pale_intensity_factor = VIVIDNESS_SETTINGS.get("pale_intensity_factor", 0.4) # How much of original color at low strength
+                target_pale_rgb_str = VIVIDNESS_SETTINGS.get("target_pale_color_rgb", "220,220,220") # Target for paleness
+                try:
+                    r_pale_target, g_pale_target, b_pale_target = map(int, target_pale_rgb_str.split(','))
+                except ValueError:
+                    chart_logger.warning(f"Invalid target_pale_color_rgb '{target_pale_rgb_str}'. Using (220,220,220).")
+                    r_pale_target, g_pale_target, b_pale_target = 220,220,220
+
+                # Effective strength for vividness: interp_strength goes from pale_intensity_factor (at strength_scaled=0) to 1.0 (at strength_scaled=1)
+                # This means at strength_scaled=0, color is pale_intensity_factor * base + (1-pale_intensity_factor) * pale_target
+                # At strength_scaled=1, color is 1.0 * base + 0 * pale_target = base
+                vividness_interp_factor = pale_intensity_factor + (1.0 - pale_intensity_factor) * strength_scaled
+
+                r_final = int(r_base * vividness_interp_factor + r_pale_target * (1 - vividness_interp_factor))
+                g_final = int(g_base * vividness_interp_factor + g_pale_target * (1 - vividness_interp_factor))
+                b_final = int(b_base * vividness_interp_factor + b_pale_target * (1 - vividness_interp_factor))
+
+                r_final, g_final, b_final = max(0,min(255,r_final)), max(0,min(255,g_final)), max(0,min(255,b_final))
+                return f'rgba({r_final},{g_final},{b_final},{final_opacity:.2f})'
+
+            # --- Create Figure and Traces ---
             fig = go.Figure()
             y_indices = list(range(len(unique_strikes_desc)))
             y_labels = [f"{s:.2f}" for s in unique_strikes_desc]
-            strike_map_for_hline = {float(f"{s:.2f}"): i for i, s in enumerate(unique_strikes_desc)}
+            strike_map_for_hline = {float(label): index for index, label in zip(y_indices, y_labels)}
+
+            # Iterate through categories to add traces - ensures legend order from config if desired
+            # Or, iterate unique categories in plot_df['score_category'] for efficiency if exact legend order isn't critical
+
+            # Sort categories by min_score descending for legend order (Strong Pos at top)
+            sorted_legend_categories = sorted(SCORE_CATEGORIES.items(), key=lambda item: item[1]['min_score'], reverse=True)
+
+            for category_name, category_props in sorted_legend_categories:
+                category_df = plot_df[plot_df['score_category'] == category_name]
+                if category_df.empty:
+                    # Add a dummy trace for legend completeness if desired, or skip
+                    fig.add_trace(go.Bar(
+                        y=[None], x=[None], name=category_props.get("legend_name", category_name),
+                        orientation='h', marker_color=category_props.get("base_color_rgba","rgba(128,128,128,0.5)"),
+                        legendgroup=category_name
+                    ))
+                    continue
+
+                # Map strike_numeric to y_indices for this category's data
+                current_y_indices = [strike_map_for_hline.get(strike_val) for strike_val in category_df['strike_numeric']]
+                # Filter out None if any strike_val wasn't in strike_map (should not happen if plot_df is built correctly)
+                current_y_indices = [y_idx for y_idx in current_y_indices if y_idx is not None]
+
+                # Ensure other data aligns with these valid y_indices
+                # This requires careful re-alignment of category_df if some y_indices were None
+                # A safer way: iterate through plot_df once, assign colors, then make one bar trace with those colors and y_indices from plot_df
+                # However, for multiple traces (for legend interactivity), we need to filter per category.
+
+                # Re-filter category_df to only include strikes that are in y_labels (and thus have a y_index)
+                valid_strikes_for_cat = [s_num for s_num, s_label in zip(unique_strikes_desc, y_labels) if s_label in y_labels] # essentially unique_strikes_desc
+                category_df_drawable = category_df[category_df['strike_numeric'].isin(valid_strikes_for_cat)].copy()
+
+                # Recalculate y_indices based on the full y_labels list for this category_df_drawable
+                cat_y_indices = [y_labels.index(f"{s_num:.2f}") for s_num in category_df_drawable['strike_numeric'] if f"{s_num:.2f}" in y_labels]
 
 
-            hovers = [self._create_hover_text(r.to_dict(), chart_type="elite_score_display") for _, r in plot_df.iterrows()]
+                bar_colors_for_trace = [
+                    get_adjusted_color_for_bar(row['score_category'], row['signal_strength_scaled'])
+                    for _, row in category_df_drawable.iterrows()
+                ]
 
+                # Prepare hover data for this specific trace
+                cat_hovers = [self._create_hover_text(r.to_dict(), chart_type="elite_score_display") for _, r in category_df_drawable.iterrows()]
 
-            # Opacities based on prediction_confidence (kept for hover or potential future use)
-            # Note: This 'opacities' list is NOT the primary driver for bar visual opacity in the new logic.
-            opacities_confidence_based = pd.to_numeric(plot_df.get(col_confidence, pd.Series(dtype=float)), errors='coerce').fillna(0.25).clip(0.15, 1.0).tolist()
-            if opacities_confidence_based:
-                chart_logger.info(f"EliteScoreChart DEBUG: opacities_confidence_based list (first 5): {opacities_confidence_based[:5]}")
-            else:
-                chart_logger.warning("EliteScoreChart DEBUG: opacities_confidence_based list is empty.")
+                fig.add_trace(go.Bar(
+                    y=cat_y_indices, # Use y_indices corresponding to the strikes in this category
+                    x=category_df_drawable[col_elite_score].values,
+                    name=category_props.get("legend_name", category_name),
+                    orientation='h',
+                    marker_color=bar_colors_for_trace,
+                    customdata=category_df_drawable.drop(columns=[col_elite_score]).to_dict('records'), # Drop score as it's x
+                    hovertext=cat_hovers, # Use pre-generated full hover texts
+                    hoverinfo='text',
+                    legendgroup=category_name # Group bars of same category for legend toggling
+                ))
 
-            # Process signal_strengths (this WILL drive vividness and new opacity)
-            signal_strengths_series = plot_df.get(col_signal_strength, pd.Series(dtype=float))
-            signal_strengths = pd.to_numeric(signal_strengths_series, errors='coerce').fillna(default_signal_strength_fillna_for_visuals).clip(0.0, 1.0).tolist()
-            if signal_strengths:
-                chart_logger.info(f"EliteScoreChart DEBUG: signal_strengths list (first 5): {signal_strengths[:5]}, type of first element: {type(signal_strengths[0]) if signal_strengths else 'N/A'}")
-            else:
-                chart_logger.warning("EliteScoreChart DEBUG: signal_strengths list is empty.")
-
-            final_bar_colors_and_opacities = []
-            scores_list = plot_df[col_elite_score].fillna(0).tolist()
-            # signal_strengths list is already prepared using default_signal_strength_fillna_for_visuals
-
-            for i in range(len(scores_list)):
-                score = scores_list[i]
-                s = signal_strengths[i] if i < len(signal_strengths) else default_signal_strength_fillna_for_visuals # Signal strength (0.0 to 1.0)
-
-                base_rgb = (128, 128, 128) # Default grey if no category matches
-
-                if score >= score_threshold_strong_positive:
-                    base_rgb = STRONG_POS_VIVID_GREEN_RGB
-                elif score >= score_threshold_moderate_positive:
-                    base_rgb = MODERATE_POS_PALE_GREEN_RGB
-                elif score > 0: # Neutral Positive
-                    base_rgb = NEUTRAL_POS_BLUE_RGB
-                elif score <= score_threshold_strong_negative:
-                    base_rgb = STRONG_NEG_VIVID_RED_RGB
-                elif score <= score_threshold_moderate_negative:
-                    base_rgb = MODERATE_NEG_PALE_RED_RGB
-                elif score < 0: # Neutral Negative
-                    base_rgb = NEUTRAL_NEG_ORANGE_RGB
-                # If score is exactly 0, it will use NEUTRAL_POS_BLUE_RGB if previous conditions not met.
-                # Or, if all thresholds are > 0, it will be grey. This is acceptable.
-
-                # Modulate vividness of the chosen base_rgb using signal_strength 's'
-                pale_factor = 0.6 # How much to shift towards a generic light/pale color for the "palest" version
-                very_pale_r = int(base_rgb[0] * (1-pale_factor) + 200 * pale_factor)
-                very_pale_g = int(base_rgb[1] * (1-pale_factor) + 200 * pale_factor)
-                very_pale_b = int(base_rgb[2] * (1-pale_factor) + 200 * pale_factor)
-
-                # Interpolate R, G, B based on signal_strength 's'
-                r_final = int(very_pale_r * (1-s) + base_rgb[0] * s)
-                g_final = int(very_pale_g * (1-s) + base_rgb[1] * s)
-                b_final = int(very_pale_b * (1-s) + base_rgb[2] * s)
-
-                # Clamp RGB values to 0-255
-                r_final = max(0, min(255, r_final))
-                g_final = max(0, min(255, g_final))
-                b_final = max(0, min(255, b_final))
-
-                # Calculate opacity: inverse to signal_strength
-                # High strength (s=1) -> min_opacity; Low strength (s=0) -> max_opacity
-                current_opacity = max_opacity_for_weak_signal - (s * (max_opacity_for_weak_signal - min_opacity_for_strong_signal))
-                current_opacity = max(min_opacity_for_strong_signal, min(max_opacity_for_weak_signal, current_opacity)) # Clip
-
-                final_bar_colors_and_opacities.append(f'rgba({r_final},{g_final},{b_final},{current_opacity:.2f})')
-
-                if i < 3: # Log for first 3 bars
-                    chart_logger.info(
-                        f"EliteScoreChart VisualDEBUG Bar {i}: Score={score:.2f}, SignalStr={s:.2f} -> "
-                        f"BaseRGB={base_rgb} -> InterpolatedRGB=({r_final},{g_final},{b_final}), Opacity={current_opacity:.2f} -> "
-                        f"FinalRGBA='{final_bar_colors_and_opacities[-1]}'"
-                    )
-
-            fig.add_trace(go.Bar(
-                y=y_indices,
-                x=plot_df[col_elite_score].fillna(0).values,
-                name='Elite Impact Score',
-                orientation='h',
-                marker_color=final_bar_colors_and_opacities, # Apply NEW colors with intensity and opacity
-                hovertext=hovers,
-                hoverinfo='text'
-            ))
-
-            legend_cfg = self.config.get("legend_settings", {})
+            # --- Layout and Final Touches ---
+            legend_cfg = self.config.get("legend_settings", {}) # General legend settings from main config
             fig.update_layout(
                 title=f"{full_chart_title}{filter_suffix}",
                 yaxis_title="Strike",
                 xaxis_title="Elite Impact Score",
-                barmode='relative', # Though only one set of bars
+                barmode='relative', # Scores are mutually exclusive per strike, 'relative' or 'stack' works. 'relative' is like 'overlay' for single bars.
                 template=plotly_template,
                 height=fig_height,
-                yaxis=dict(tickmode='array', tickvals=y_indices, ticktext=y_labels, autorange='reversed'),
+                yaxis=dict(tickmode='array', tickvals=y_indices, ticktext=y_labels, autorange='reversed'), # High strikes at top
                 xaxis=dict(zeroline=True, zerolinewidth=1.5, zerolinecolor='lightgrey'),
                 legend=dict(
+                    title_text="Score Categories",
                     orientation=legend_cfg.get("orientation", "v"), yanchor=legend_cfg.get("y_anchor", "top"),
                     y=legend_cfg.get("y_pos", 1), xanchor=legend_cfg.get("x_anchor", "left"),
                     x=legend_cfg.get("x_pos", 1.02), traceorder=legend_cfg.get("trace_order", "reversed")
                 ),
-                hovermode="y unified"
+                hovermode="y unified" # Shows hover for all traces at a given y (strike)
             )
 
             if current_price is not None and pd.notna(current_price) and current_price > 0:
-                if unique_strikes_desc:
+                if unique_strikes_desc: # Ensure there are strikes to find closest to
                     closest_plotted_strike_numeric = min(unique_strikes_desc, key=lambda s: abs(s - current_price))
-                    y_price_idx_for_line = strike_map_for_hline.get(closest_plotted_strike_numeric)
+                    y_price_idx_for_line = strike_map_for_hline.get(float(f"{closest_plotted_strike_numeric:.2f}")) # Use formatted key
                     if y_price_idx_for_line is not None:
                         fig = self._add_price_line(fig, current_price=y_price_idx_for_line, orientation='horizontal',
                                                annotation={'text': f"Current: {current_price:.2f}"})
 
             fig = self._add_timestamp_annotation(fig, fetch_timestamp)
-            self._save_figure(fig, chart_name, symbol)
+            self._save_figure(fig, chart_name, symbol) # Save if configured
 
         except Exception as e:
             chart_logger.error(f"{chart_name} ({symbol}) creation failed: {e}", exc_info=True)

@@ -113,7 +113,7 @@ ENHANCED_BLURBS = {
         </li>
         <li><b>Prediction Confidence:</b> Available in the hover text for each bar.</li>
     </ul>
-    <p>Hover over each bar for precise values. Colors, score thresholds, and opacity settings are configurable in <code>config_v2.json</code> under <code>elite_score_chart_config</code>.</p>
+    <p>Hover over each bar for precise values. Click items in the legend to filter score categories. Colors, score thresholds, and opacity settings are configurable in <code>config_v2.json</code> under <code>elite_score_chart_config</code>.</p>
     </div>""",
     ID_NET_GREEK_FLOW_HEATMAP_CHART: """<div class="metric-blurb"><h3>Net Greek Flow & Pressure Heatmap</h3>...</div>""",
     "net_volval_comp": """<div class="metric-blurb">...</div>""",
