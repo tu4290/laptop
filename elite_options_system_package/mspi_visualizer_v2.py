@@ -1955,17 +1955,25 @@ class MSPIVisualizerV2:
             hovers = [self._create_hover_text(r.to_dict(), chart_type="elite_score_display") for _, r in plot_df.iterrows()]
 
             # Use confidence for opacity
-            opacities = pd.to_numeric(plot_df.get(col_confidence, pd.Series(dtype=float)), errors='coerce').fillna(0.5).clip(0.2, 1.0).tolist()
+            opacities = pd.to_numeric(plot_df.get(col_confidence, pd.Series(dtype=float)), errors='coerce').fillna(0.25).clip(0.15, 1.0).tolist()
+            if opacities:
+                chart_logger.info(f"EliteScoreChart DEBUG: opacities list (first 5): {opacities[:5]}, type of first element: {type(opacities[0]) if opacities else 'N/A'}")
+            else:
+                chart_logger.warning("EliteScoreChart DEBUG: opacities list is empty.")
 
             # Process signal_strength for color intensity modulation
             signal_strengths_series = plot_df.get(col_signal_strength, pd.Series(dtype=float))
             signal_strengths = pd.to_numeric(signal_strengths_series, errors='coerce').fillna(0.5).clip(0.0, 1.0).tolist()
+            if signal_strengths:
+                chart_logger.info(f"EliteScoreChart DEBUG: signal_strengths list (first 5): {signal_strengths[:5]}, type of first element: {type(signal_strengths[0]) if signal_strengths else 'N/A'}")
+            else:
+                chart_logger.warning("EliteScoreChart DEBUG: signal_strengths list is empty.")
 
             # Define base RGB tuples for color interpolation
-            VIVID_POS_RGB = (0, 150, 0)
-            PALE_POS_RGB = (100, 190, 100)
-            VIVID_NEG_RGB = (150, 0, 0)
-            PALE_NEG_RGB = (190, 100, 100)
+            VIVID_POS_RGB = (0, 180, 0)   # Brighter Green
+            PALE_POS_RGB = (144, 238, 144) # LightGreen
+            VIVID_NEG_RGB = (220, 20, 60)  # Crimson
+            PALE_NEG_RGB = (250, 128, 114) # Salmon
 
             # New logic for bar_colors (interpolated based on signal_strength)
             bar_colors_interpolated = []
@@ -1987,7 +1995,15 @@ class MSPIVisualizerV2:
                     g_final = int(PALE_NEG_RGB[1] * (1-s) + VIVID_NEG_RGB[1] * s)
                     b_final = int(PALE_NEG_RGB[2] * (1-s) + VIVID_NEG_RGB[2] * s)
 
-                bar_colors_interpolated.append(f'rgba({r_final},{g_final},{b_final},1)') # Alpha is 1 here, opacity applied next
+                interpolated_color_str = f'rgba({r_final},{g_final},{b_final},1)'
+                bar_colors_interpolated.append(interpolated_color_str) # Alpha is 1 here, opacity applied next
+                if i < 3:
+                    chart_logger.info(f"EliteScoreChart DEBUG Bar {i}: Score={score:.2f}, SignalStr={s:.2f} -> InterpolatedRGBA1={interpolated_color_str}")
+
+            if bar_colors_interpolated:
+                chart_logger.info(f"EliteScoreChart DEBUG: bar_colors_interpolated (first 3): {bar_colors_interpolated[:3]}")
+            else:
+                chart_logger.warning("EliteScoreChart DEBUG: bar_colors_interpolated list is empty.")
 
             # Apply opacity to each color (existing robust logic)
             final_bar_colors_with_opacity = []
@@ -1997,12 +2013,22 @@ class MSPIVisualizerV2:
                 # Defensive: ensure opacities list is long enough, use default if not.
                 opacity_val = opacities[i] if i < len(opacities) else 0.5 # Default opacity if lists mismatch
 
+                final_rgba_str_being_appended = color_str # Default to original if parsing fails
                 parts = color_str.replace('rgba(', '').replace(')', '').split(',')
                 if len(parts) >= 3: # Check if we have at least R, G, B
-                    final_bar_colors_with_opacity.append(f"rgba({parts[0].strip()},{parts[1].strip()},{parts[2].strip()},{opacity_val})")
+                    final_rgba_str_being_appended = f"rgba({parts[0].strip()},{parts[1].strip()},{parts[2].strip()},{opacity_val})"
+                    final_bar_colors_with_opacity.append(final_rgba_str_being_appended)
                 else:
                     # Fallback if color_str parsing fails, though unlikely with defined bar_colors_interpolated
                     final_bar_colors_with_opacity.append(color_str) # Append original color, which has alpha=1
+
+                if i < 3:
+                    chart_logger.info(f"EliteScoreChart DEBUG Bar {i}: BaseInterpolatedColor='{color_str}', OpacityVal={opacity_val:.2f} -> FinalRGBA='{final_rgba_str_being_appended}'")
+
+            if final_bar_colors_with_opacity:
+                chart_logger.info(f"EliteScoreChart DEBUG: final_bar_colors_with_opacity (first 3): {final_bar_colors_with_opacity[:3]}")
+            else:
+                chart_logger.warning("EliteScoreChart DEBUG: final_bar_colors_with_opacity list is empty.")
 
             fig.add_trace(go.Bar(
                 y=y_indices,
