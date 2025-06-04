@@ -149,12 +149,12 @@ CHART_IDS_CB: List[str] = []
 ID_SYMBOL_INPUT_CB, ID_EXPIRATION_INPUT_CB, ID_RANGE_SLIDER_CB, ID_INTERVAL_DROPDOWN_CB, \
 ID_FETCH_BUTTON_CB, ID_STATUS_DISPLAY_CB, ID_INTERVAL_TIMER_CB, ID_CACHE_STORE_CB, \
 ID_CONFIG_STORE_CB, ID_NET_GREEK_FLOW_HEATMAP_CHART_CB, ID_GREEK_FLOW_SELECTOR_IN_CARD_CB, \
-ID_MSPI_CHART_TOGGLE_SELECTOR_CB, \
+ID_MSPI_CHART_TOGGLE_SELECTOR_CB, ID_TOP_RIGHT_CHART_TOGGLE_SELECTOR_CB, \
 ID_MODE_TABS_CB, ID_MODE_CONTENT_CB, ID_TAB_MAIN_DASHBOARD_CB, ID_TAB_SDAG_DIAGNOSTICS_CB = \
     "symbol-input", "expiration-input", "price-range-slider", "interval-dropdown", \
     "fetch-button", "status-display", "interval-component", "cache-key-store", \
     "app-config-store", "net-greek-flow-heatmap-chart", "greek-flow-selector-in-card", \
-    "mspi-chart-toggle-selector", \
+    "mspi-chart-toggle-selector", "top-right-chart-toggle-selector", \
     "mode-tabs", "mode-content", "tab-main-dashboard", "tab-sdag-diagnostics" 
 
 _layout_mode_functions_imported_cb = False
@@ -168,7 +168,7 @@ try:
         ID_INTERVAL_DROPDOWN, ID_FETCH_BUTTON, ID_STATUS_DISPLAY,
         ID_INTERVAL_TIMER, ID_CACHE_STORE, ID_CONFIG_STORE,
         ID_NET_GREEK_FLOW_HEATMAP_CHART, ID_GREEK_FLOW_SELECTOR_IN_CARD, 
-        ID_MSPI_CHART_TOGGLE_SELECTOR, 
+        ID_MSPI_CHART_TOGGLE_SELECTOR, ID_TOP_RIGHT_CHART_TOGGLE_SELECTOR, # Added import
         ID_MODE_TABS, ID_MODE_CONTENT, ID_TAB_MAIN_DASHBOARD, ID_TAB_SDAG_DIAGNOSTICS, 
         get_main_dashboard_mode_layout, get_sdag_diagnostics_mode_layout 
     )

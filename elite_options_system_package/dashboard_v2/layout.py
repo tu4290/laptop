@@ -134,13 +134,17 @@ ALL_CHART_IDS_FOR_FACTORY: List[str] = list(set(MAIN_DASHBOARD_CHART_IDS_ORDERED
 
 # --- Helper function to create a chart card ---
 def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
+    # ... inside create_chart_card ...
     local_create_empty_figure = create_empty_figure 
     display_title_accordion = chart_id.replace('_', ' ').replace('-chart', '').title()
-    
-    card_body_children = []
+    graph_component_id = chart_id # Default graph ID
 
+    card_body_children = [] # Initialize as list
+
+    # Specific handling for charts WITH toggles:
     if chart_id == ID_NET_GREEK_FLOW_HEATMAP_CHART: 
         display_title_accordion = "Net Greek Flow & Pressure Heatmap"
+        # ... (rest of existing Greek flow selector logic)
         card_body_children.append(
             html.Div([
                 dbc.Label("Select Metric:", html_for=ID_GREEK_FLOW_SELECTOR_IN_CARD, className="fw-bold control-label mb-1 small"),
@@ -159,8 +163,10 @@ def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
                 )
             ], className="mb-2") 
         )
-    elif chart_id == "mspi_heatmap": # This is the ID for the graph component in the MSPI card
-        display_title_accordion = "MSPI View" # Generic title as content can change
+    elif chart_id == "mspi_heatmap": # This is the MSPI heatmap card with its own toggle
+        display_title_accordion = "MSPI View"
+        graph_component_id = "mspi_heatmap"
+        # ... (rest of existing MSPI heatmap toggle logic)
         card_body_children.append(
             html.Div([
                 dbc.Label("Select View:", html_for=ID_MSPI_CHART_TOGGLE_SELECTOR, className="fw-bold control-label mb-1 small"),
@@ -169,16 +175,20 @@ def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
                     options=[
                         {'label': 'MSPI Heatmap', 'value': 'mspi_heatmap'},
                         {'label': 'Net Volume Pressure (H) Heatmap', 'value': 'net_volume_pressure_heatmap'},
-                        # Add more options here later if needed
                     ],
-                    value='mspi_heatmap', # Default view
+                    value='mspi_heatmap',
                     clearable=False, className="mb-3 form-select-sm", searchable=False,
                     style={'fontSize': '0.85rem'}
                 )
             ], className="mb-2")
         )
+    elif chart_id == "mspi_components": # This is the card we are reverting
+        display_title_accordion = "MSPI Components" # Reverted title
+        # NO dropdown is added here now.
+        # graph_component_id will correctly be "mspi_components" via the default assignment earlier in the function.
+        blurb_html = ENHANCED_BLURBS.get("mspi_components", "") # Ensure blurb is still correctly assigned
 
-
+    # Common logic for accordion and graph loading remains after this conditional block
     accordion_item = dbc.AccordionItem(
         dcc.Markdown(blurb_html, dangerously_allow_html=True, className="blurb-markdown-content"),
         title=f"About: {display_title_accordion}",
@@ -186,14 +196,10 @@ def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
     )
     accordion = dbc.Accordion(accordion_item, start_collapsed=True, flush=True, id=f"accordion-blurb-{chart_id}")
     
-    # The dcc.Graph component ID remains "mspi_heatmap" for the MSPI card,
-    # its figure will be updated by the callback based on ID_MSPI_CHART_TOGGLE_SELECTOR.
-    # For other charts, the chart_id is used directly for the dcc.Graph.
-    graph_component_id = chart_id 
-    
+    # Main graph component (common logic, uses `graph_component_id`)
     card_body_children.append(
         dcc.Loading(
-            id=f"loading-{chart_id}", type="circle", color="#007bff", fullscreen=False,
+            id=f"loading-{graph_component_id}", type="circle", color="#007bff", fullscreen=False, # Use graph_component_id for loading ID
             children=[
                 dcc.Graph(
                     id=graph_component_id, # Use the determined graph ID

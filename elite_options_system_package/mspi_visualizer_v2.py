@@ -71,7 +71,12 @@ DEFAULT_VISUALIZER_CONFIG: Dict[str, Any] = {
         "show_overview_metrics_default": True, "show_oi_structure_default": True, "show_details_section_default": True,
         "overview_metrics_config": [
           { "key": "mspi", "label": "MSPI", "precision": 3, "is_currency": False }, { "key": "sai", "label": "SAI", "precision": 3, "is_currency": False },
-          { "key": "ssi", "label": "SSI", "precision": 3, "is_currency": False }, { "key": "cfi", "label": "ARFI", "precision": 3, "is_currency": False }, 
+          { "key": "ssi", "label": "SSI", "precision": 3, "is_currency": False }, { "key": "cfi", "label": "ARFI", "precision": 3, "is_currency": False },
+          # Elite Impact Metrics
+          { "key": "elite_impact_score", "label": "Elite Score", "precision": 2, "is_currency": False },
+          { "key": "prediction_confidence", "label": "Confidence", "precision": 2, "is_currency": False },
+          { "key": "signal_strength", "label": "Signal Str.", "precision": 2, "is_currency": False },
+          # Original MSPI Components
           { "key": "dag_custom", "label": "DAG(C)", "precision": 0, "is_currency": False }, { "key": "tdpi", "label": "TDPI", "precision": 0, "is_currency": False },
           { "key": "vri", "label": "VRI", "precision": 0, "is_currency": False },
           { "key": "sdag_multiplicative", "label": "SDAG(M)", "precision":0, "is_currency": False }, { "key": "sdag_directional", "label": "SDAG(D)", "precision":0, "is_currency": False },
@@ -1790,6 +1795,182 @@ class MSPIVisualizerV2:
 
         chart_logger.info(f"Chart '{chart_name}' for {symbol} ({metric_column_to_plot}) created successfully.")
         return fig
+
+    def create_elite_impact_score_chart(
+        self,
+        processed_data: pd.DataFrame,
+        symbol: str = "N/A",
+        current_price: Optional[float] = None,
+        fetch_timestamp: Optional[str] = None,
+        selected_price_range_pct_override: Optional[float] = None,
+        **kwargs
+    ) -> go.Figure:
+        chart_name = "Elite Impact Score Chart"
+        chart_title_part = "Elite Impact Score by Strike"
+        full_chart_title = f"<b>{symbol.upper()}</b> - {chart_title_part}"
+        chart_logger = self.instance_logger.getChild(chart_name)
+        chart_logger.info(f"Creating {full_chart_title} for {symbol}.")
+
+        fig_height = self.config.get("default_chart_height", 700)
+        plotly_template = self.config.get("plotly_template", "plotly_dark")
+
+        # Define column names from EliteImpactColumns (assuming they are available via self or imported)
+        # For safety, use string literals if EliteImpactColumns isn't directly accessible here
+        # or ensure it's imported and available.
+        # For this subtask, we'll assume string literals matching the actual column names.
+        col_elite_score = "elite_impact_score"
+        col_confidence = "prediction_confidence"
+        col_signal_strength = "signal_strength"
+        # self.col_strike and self.col_opt_kind are already defined in __init__
+
+        try:
+            if not isinstance(processed_data, pd.DataFrame) or processed_data.empty:
+                return self._create_empty_figure(f"{symbol} - {chart_name}: No Data Provided", height=fig_height, reason="Input DataFrame empty/invalid")
+
+            required_cols_for_chart = [self.col_strike, col_elite_score, col_confidence, col_signal_strength]
+            # opt_kind might not be strictly necessary if scores are per-strike, but good for hover context
+            if self.col_opt_kind not in processed_data.columns:
+                # If opt_kind is missing, we might need to aggregate strikes differently or simplify hover
+                chart_logger.warning(f"'{self.col_opt_kind}' column missing. Elite scores will be aggregated per strike.")
+                # Add self.col_opt_kind to required_cols if you intend to use it for hover differentiation
+
+            df_cleaned, _ = self._ensure_columns(processed_data.copy(), required_cols_for_chart, chart_name)
+
+            if not all(c in df_cleaned.columns for c in [self.col_strike, col_elite_score]):
+                missing = [c for c in [self.col_strike, col_elite_score] if c not in df_cleaned.columns]
+                chart_logger.error(f"Missing required columns for {chart_name}: {missing}.")
+                return self._create_empty_figure(f"{symbol} - {chart_name}: Missing Core Data ({', '.join(missing)})", height=fig_height, reason=f"Missing: {', '.join(missing)}")
+
+            df = df_cleaned
+            df['strike_numeric'] = pd.to_numeric(df[self.col_strike], errors='coerce')
+            df[col_elite_score] = pd.to_numeric(df[col_elite_score], errors='coerce')
+            df[col_confidence] = pd.to_numeric(df[col_confidence], errors='coerce').fillna(0.5) # Default confidence
+            df[col_signal_strength] = pd.to_numeric(df[col_signal_strength], errors='coerce').fillna(0.0)
+
+            df = df.dropna(subset=['strike_numeric', col_elite_score])
+            if df.empty:
+                return self._create_empty_figure(f"{symbol} - {chart_name}: No Valid Data After Cleaning", height=fig_height, reason="No valid data after initial cleaning")
+
+            # Aggregate scores per strike (e.g., average or first if multiple options per strike)
+            # Elite scores are typically one per strike, but let's aggregate robustly.
+            agg_functions = {
+                col_elite_score: 'mean', # Or 'first' if only one expected
+                col_confidence: 'mean',
+                col_signal_strength: 'mean'
+            }
+            # Add other hover context columns to agg_functions if needed
+            overview_metrics_cfg = self.config.get("hover_settings", {}).get("overview_metrics_config", [])
+            column_names_map = self.config.get("column_names", {})
+            for m_cfg in overview_metrics_cfg:
+                cfg_key = m_cfg.get("key")
+                if cfg_key:
+                    actual_col_for_hover = column_names_map.get(cfg_key, cfg_key)
+                    if actual_col_for_hover in df.columns and actual_col_for_hover not in agg_functions and actual_col_for_hover != 'strike_numeric':
+                        agg_functions[actual_col_for_hover] = 'first'
+
+            if self.col_opt_kind in df.columns and self.col_opt_kind not in agg_functions: # If opt_kind exists, take first for hover
+                 agg_functions[self.col_opt_kind] = 'first'
+
+
+            agg_data = df.groupby('strike_numeric', as_index=False).agg(agg_functions)
+
+            # --- Price Range Filtering Logic (similar to _create_raw_greek_chart) ---
+            filtered_df = agg_data.copy()
+            filter_suffix = ""
+            default_range_pct = self.config.get("chart_specific_params", {}).get("raw_greek_charts_price_range_pct", 7.5) # Reuse existing config key or create new
+
+            selected_pct_to_use = selected_price_range_pct_override if isinstance(selected_price_range_pct_override, (int, float)) and pd.notna(selected_price_range_pct_override) and selected_price_range_pct_override > 0 else default_range_pct
+
+            if current_price is not None and pd.notna(current_price) and current_price > 0:
+                min_s = current_price * (1 - (selected_pct_to_use / 100.0))
+                max_s = current_price * (1 + (selected_pct_to_use / 100.0))
+                filtered_df = agg_data[(agg_data['strike_numeric'] >= min_s) & (agg_data['strike_numeric'] <= max_s)].copy()
+                filter_suffix = f" (Strikes +/- {selected_pct_to_use:.1f}%)"
+                if filtered_df.empty:
+                    chart_logger.warning(f"{chart_name}: DataFrame empty after price range filter for {symbol}.")
+            # --- End of Price Range Filtering ---
+
+            if filtered_df.empty:
+                 return self._create_empty_figure(f"{symbol} - {chart_name}: No Data in Selected Range {filter_suffix}", height=fig_height, reason=f"No data for range {filter_suffix}")
+
+            unique_strikes_desc = sorted(filtered_df['strike_numeric'].dropna().unique(), reverse=True)
+            if not unique_strikes_desc:
+                return self._create_empty_figure(f"{symbol} - {chart_name}: No Unique Strikes After Filtering", height=fig_height, reason="No strikes left for plot")
+
+            # Reindex to ensure all unique_strikes_desc are present for plotting
+            plot_df = filtered_df.set_index('strike_numeric').reindex(unique_strikes_desc).reset_index()
+
+            fig = go.Figure()
+            y_indices = list(range(len(unique_strikes_desc)))
+            y_labels = [f"{s:.2f}" for s in unique_strikes_desc]
+            strike_map_for_hline = {float(f"{s:.2f}"): i for i, s in enumerate(unique_strikes_desc)}
+
+
+            hovers = [self._create_hover_text(r.to_dict(), chart_type="default") for _, r in plot_df.iterrows()]
+
+            # Use confidence for opacity
+            opacities = pd.to_numeric(plot_df[col_confidence], errors='coerce').fillna(0.5).clip(0.2, 1.0).tolist()
+
+            # Bar colors based on score positive/negative
+            bar_colors = ['rgba(0, 150, 0, 1)' if score >= 0 else 'rgba(150, 0, 0, 1)' for score in plot_df[col_elite_score].fillna(0)]
+
+            # Apply opacity to each color
+            final_bar_colors_with_opacity = []
+            for i, color_str in enumerate(bar_colors):
+                opacity_val = opacities[i]
+                # Assuming color_str is like 'rgba(r,g,b,a)'
+                parts = color_str.replace('rgba(', '').replace(')', '').split(',')
+                final_bar_colors_with_opacity.append(f"rgba({parts[0]},{parts[1]},{parts[2]},{opacity_val})")
+
+
+            fig.add_trace(go.Bar(
+                y=y_indices,
+                x=plot_df[col_elite_score].fillna(0).values,
+                name='Elite Impact Score',
+                orientation='h',
+                marker_color=final_bar_colors_with_opacity, # Apply opacity here
+                hovertext=hovers,
+                hoverinfo='text'
+            ))
+
+            legend_cfg = self.config.get("legend_settings", {})
+            fig.update_layout(
+                title=f"{full_chart_title}{filter_suffix}",
+                yaxis_title="Strike",
+                xaxis_title="Elite Impact Score",
+                barmode='relative', # Though only one set of bars
+                template=plotly_template,
+                height=fig_height,
+                yaxis=dict(tickmode='array', tickvals=y_indices, ticktext=y_labels, autorange='reversed'),
+                xaxis=dict(zeroline=True, zerolinewidth=1.5, zerolinecolor='lightgrey'),
+                legend=dict(
+                    orientation=legend_cfg.get("orientation", "v"), yanchor=legend_cfg.get("y_anchor", "top"),
+                    y=legend_cfg.get("y_pos", 1), xanchor=legend_cfg.get("x_anchor", "left"),
+                    x=legend_cfg.get("x_pos", 1.02), traceorder=legend_cfg.get("trace_order", "reversed")
+                ),
+                hovermode="y unified"
+            )
+
+            if current_price is not None and pd.notna(current_price) and current_price > 0:
+                if unique_strikes_desc:
+                    closest_plotted_strike_numeric = min(unique_strikes_desc, key=lambda s: abs(s - current_price))
+                    y_price_idx_for_line = strike_map_for_hline.get(closest_plotted_strike_numeric)
+                    if y_price_idx_for_line is not None:
+                        fig = self._add_price_line(fig, current_price=y_price_idx_for_line, orientation='horizontal',
+                                               annotation={'text': f"Current: {current_price:.2f}"})
+
+            fig = self._add_timestamp_annotation(fig, fetch_timestamp)
+            self._save_figure(fig, chart_name, symbol)
+
+        except Exception as e:
+            chart_logger.error(f"{chart_name} ({symbol}) creation failed: {e}", exc_info=True)
+            return self._create_empty_figure(f"{symbol} - {chart_name}: Plotting Error", height=fig_height, reason=str(e))
+
+        chart_logger.info(f"{chart_name} for {symbol} created successfully.")
+        return fig
+
+        # --- E. Standalone Test Block (`if __name__ == '__main__':`) ---
+    if __name__ == '__main__':
         
         # --- E. Standalone Test Block (`if __name__ == '__main__':`) ---
     if __name__ == '__main__':
