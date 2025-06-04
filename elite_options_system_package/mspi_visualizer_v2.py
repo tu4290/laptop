@@ -1849,10 +1849,51 @@ class MSPIVisualizerV2:
         # For safety, use string literals if EliteImpactColumns isn't directly accessible here
         # or ensure it's imported and available.
         # For this subtask, we'll assume string literals matching the actual column names.
-        col_elite_score = "elite_impact_score" # Defined as per subtask
-        col_confidence = "prediction_confidence" # Defined as per subtask
-        col_signal_strength = "signal_strength" # Defined as per subtask
+        col_elite_score = "elite_impact_score"
+        col_confidence = "prediction_confidence"
+        col_signal_strength = "signal_strength"
         # self.col_strike and self.col_opt_kind are already defined in __init__
+
+        # Helper function to parse RGB strings from config
+        def _parse_rgb_from_config_str(rgb_config_str: Optional[str], default_rgb_tuple: Tuple[int, int, int]) -> Tuple[int, int, int]:
+            if isinstance(rgb_config_str, str):
+                parts = [p.strip() for p in rgb_config_str.split(',')]
+                if len(parts) == 3:
+                    try:
+                        return tuple(int(p) for p in parts)
+                    except ValueError:
+                        chart_logger.warning(f"EliteScoreChart: Could not parse RGB string '{rgb_config_str}'. Using default {default_rgb_tuple}.")
+                        # Fall through to default by not returning here
+                else:
+                    chart_logger.warning(f"EliteScoreChart: RGB string '{rgb_config_str}' does not have 3 parts. Using default {default_rgb_tuple}.")
+            return default_rgb_tuple
+
+        visual_settings_config_path = ["elite_score_chart_config", "visual_settings"]
+        # Ensure self.config (visualizer specific config) is checked first, then self.full_app_config by _get_config_value
+        visual_settings = self._get_config_value(visual_settings_config_path, {})
+        chart_logger.info(f"EliteScoreChart: Loaded visual_settings from config: {visual_settings}")
+        if not isinstance(visual_settings, dict) or not visual_settings: # Check if it's a dict and non-empty
+            chart_logger.warning("EliteScoreChart: visual_settings not found or empty in config. Using hardcoded defaults for visuals.")
+            visual_settings = {} # Ensure visual_settings is a dict to prevent .get errors later
+
+        # Color definitions (RGB tuples) - Sourced from config with fallbacks
+        STRONG_POS_VIVID_GREEN_RGB = _parse_rgb_from_config_str(visual_settings.get("strong_positive_color_rgb"), (0, 180, 0))
+        MODERATE_POS_PALE_GREEN_RGB = _parse_rgb_from_config_str(visual_settings.get("moderate_positive_color_rgb"), (144, 238, 144))
+        NEUTRAL_POS_BLUE_RGB = _parse_rgb_from_config_str(visual_settings.get("neutral_positive_color_rgb"), (135, 206, 250))
+        NEUTRAL_NEG_ORANGE_RGB = _parse_rgb_from_config_str(visual_settings.get("neutral_negative_color_rgb"), (255, 165, 0))
+        MODERATE_NEG_PALE_RED_RGB = _parse_rgb_from_config_str(visual_settings.get("moderate_negative_color_rgb"), (250, 128, 114))
+        STRONG_NEG_VIVID_RED_RGB = _parse_rgb_from_config_str(visual_settings.get("strong_negative_color_rgb"), (220, 20, 60))
+
+        # Score thresholds for color transitions - Sourced from config with fallbacks
+        score_threshold_strong_positive = visual_settings.get("score_threshold_strong_positive", 0.75)
+        score_threshold_moderate_positive = visual_settings.get("score_threshold_moderate_positive", 0.25)
+        score_threshold_strong_negative = visual_settings.get("score_threshold_strong_negative", -0.75)
+        score_threshold_moderate_negative = visual_settings.get("score_threshold_moderate_negative", -0.25)
+
+        # Opacity parameters & signal_strength fillna - Sourced from config with fallbacks
+        min_opacity_for_strong_signal = visual_settings.get("min_opacity_for_strong_signal", 0.3)
+        max_opacity_for_weak_signal = visual_settings.get("max_opacity_for_weak_signal", 0.9)
+        default_signal_strength_fillna_for_visuals = visual_settings.get("default_signal_strength_fillna_for_visuals", 0.0)
 
         try:
             if not isinstance(processed_data, pd.DataFrame) or processed_data.empty:
@@ -1954,88 +1995,84 @@ class MSPIVisualizerV2:
 
             hovers = [self._create_hover_text(r.to_dict(), chart_type="elite_score_display") for _, r in plot_df.iterrows()]
 
-            # Use confidence for opacity
-            opacities = pd.to_numeric(plot_df.get(col_confidence, pd.Series(dtype=float)), errors='coerce').fillna(0.25).clip(0.15, 1.0).tolist()
-            if opacities:
-                chart_logger.info(f"EliteScoreChart DEBUG: opacities list (first 5): {opacities[:5]}, type of first element: {type(opacities[0]) if opacities else 'N/A'}")
-            else:
-                chart_logger.warning("EliteScoreChart DEBUG: opacities list is empty.")
 
-            # Process signal_strength for color intensity modulation
+            # Opacities based on prediction_confidence (kept for hover or potential future use)
+            # Note: This 'opacities' list is NOT the primary driver for bar visual opacity in the new logic.
+            opacities_confidence_based = pd.to_numeric(plot_df.get(col_confidence, pd.Series(dtype=float)), errors='coerce').fillna(0.25).clip(0.15, 1.0).tolist()
+            if opacities_confidence_based:
+                chart_logger.info(f"EliteScoreChart DEBUG: opacities_confidence_based list (first 5): {opacities_confidence_based[:5]}")
+            else:
+                chart_logger.warning("EliteScoreChart DEBUG: opacities_confidence_based list is empty.")
+
+            # Process signal_strengths (this WILL drive vividness and new opacity)
             signal_strengths_series = plot_df.get(col_signal_strength, pd.Series(dtype=float))
-            signal_strengths = pd.to_numeric(signal_strengths_series, errors='coerce').fillna(0.5).clip(0.0, 1.0).tolist()
+            signal_strengths = pd.to_numeric(signal_strengths_series, errors='coerce').fillna(default_signal_strength_fillna_for_visuals).clip(0.0, 1.0).tolist()
             if signal_strengths:
                 chart_logger.info(f"EliteScoreChart DEBUG: signal_strengths list (first 5): {signal_strengths[:5]}, type of first element: {type(signal_strengths[0]) if signal_strengths else 'N/A'}")
             else:
                 chart_logger.warning("EliteScoreChart DEBUG: signal_strengths list is empty.")
 
-            # Define base RGB tuples for color interpolation
-            VIVID_POS_RGB = (0, 180, 0)   # Brighter Green
-            PALE_POS_RGB = (144, 238, 144) # LightGreen
-            VIVID_NEG_RGB = (220, 20, 60)  # Crimson
-            PALE_NEG_RGB = (250, 128, 114) # Salmon
-
-            # New logic for bar_colors (interpolated based on signal_strength)
-            bar_colors_interpolated = []
-            # Ensure scores_list uses the correct column name from plot_df
+            final_bar_colors_and_opacities = []
             scores_list = plot_df[col_elite_score].fillna(0).tolist()
-            num_scores = len(scores_list) # Recalculate num_scores based on the actual list
+            # signal_strengths list is already prepared using default_signal_strength_fillna_for_visuals
 
-            for i in range(num_scores):
+            for i in range(len(scores_list)):
                 score = scores_list[i]
-                # Ensure signal_strengths list is accessed safely
-                s = signal_strengths[i] if i < len(signal_strengths) else 0.5 # Default signal_strength if lists mismatch
+                s = signal_strengths[i] if i < len(signal_strengths) else default_signal_strength_fillna_for_visuals # Signal strength (0.0 to 1.0)
 
-                if score >= 0:
-                    r_final = int(PALE_POS_RGB[0] * (1-s) + VIVID_POS_RGB[0] * s)
-                    g_final = int(PALE_POS_RGB[1] * (1-s) + VIVID_POS_RGB[1] * s)
-                    b_final = int(PALE_POS_RGB[2] * (1-s) + VIVID_POS_RGB[2] * s)
-                else:
-                    r_final = int(PALE_NEG_RGB[0] * (1-s) + VIVID_NEG_RGB[0] * s)
-                    g_final = int(PALE_NEG_RGB[1] * (1-s) + VIVID_NEG_RGB[1] * s)
-                    b_final = int(PALE_NEG_RGB[2] * (1-s) + VIVID_NEG_RGB[2] * s)
+                base_rgb = (128, 128, 128) # Default grey if no category matches
 
-                interpolated_color_str = f'rgba({r_final},{g_final},{b_final},1)'
-                bar_colors_interpolated.append(interpolated_color_str) # Alpha is 1 here, opacity applied next
-                if i < 3:
-                    chart_logger.info(f"EliteScoreChart DEBUG Bar {i}: Score={score:.2f}, SignalStr={s:.2f} -> InterpolatedRGBA1={interpolated_color_str}")
+                if score >= score_threshold_strong_positive:
+                    base_rgb = STRONG_POS_VIVID_GREEN_RGB
+                elif score >= score_threshold_moderate_positive:
+                    base_rgb = MODERATE_POS_PALE_GREEN_RGB
+                elif score > 0: # Neutral Positive
+                    base_rgb = NEUTRAL_POS_BLUE_RGB
+                elif score <= score_threshold_strong_negative:
+                    base_rgb = STRONG_NEG_VIVID_RED_RGB
+                elif score <= score_threshold_moderate_negative:
+                    base_rgb = MODERATE_NEG_PALE_RED_RGB
+                elif score < 0: # Neutral Negative
+                    base_rgb = NEUTRAL_NEG_ORANGE_RGB
+                # If score is exactly 0, it will use NEUTRAL_POS_BLUE_RGB if previous conditions not met.
+                # Or, if all thresholds are > 0, it will be grey. This is acceptable.
 
-            if bar_colors_interpolated:
-                chart_logger.info(f"EliteScoreChart DEBUG: bar_colors_interpolated (first 3): {bar_colors_interpolated[:3]}")
-            else:
-                chart_logger.warning("EliteScoreChart DEBUG: bar_colors_interpolated list is empty.")
+                # Modulate vividness of the chosen base_rgb using signal_strength 's'
+                pale_factor = 0.6 # How much to shift towards a generic light/pale color for the "palest" version
+                very_pale_r = int(base_rgb[0] * (1-pale_factor) + 200 * pale_factor)
+                very_pale_g = int(base_rgb[1] * (1-pale_factor) + 200 * pale_factor)
+                very_pale_b = int(base_rgb[2] * (1-pale_factor) + 200 * pale_factor)
 
-            # Apply opacity to each color (existing robust logic)
-            final_bar_colors_with_opacity = []
-            num_items = len(bar_colors_interpolated)
-            for i in range(num_items):
-                color_str = bar_colors_interpolated[i]
-                # Defensive: ensure opacities list is long enough, use default if not.
-                opacity_val = opacities[i] if i < len(opacities) else 0.5 # Default opacity if lists mismatch
+                # Interpolate R, G, B based on signal_strength 's'
+                r_final = int(very_pale_r * (1-s) + base_rgb[0] * s)
+                g_final = int(very_pale_g * (1-s) + base_rgb[1] * s)
+                b_final = int(very_pale_b * (1-s) + base_rgb[2] * s)
 
-                final_rgba_str_being_appended = color_str # Default to original if parsing fails
-                parts = color_str.replace('rgba(', '').replace(')', '').split(',')
-                if len(parts) >= 3: # Check if we have at least R, G, B
-                    final_rgba_str_being_appended = f"rgba({parts[0].strip()},{parts[1].strip()},{parts[2].strip()},{opacity_val})"
-                    final_bar_colors_with_opacity.append(final_rgba_str_being_appended)
-                else:
-                    # Fallback if color_str parsing fails, though unlikely with defined bar_colors_interpolated
-                    final_bar_colors_with_opacity.append(color_str) # Append original color, which has alpha=1
+                # Clamp RGB values to 0-255
+                r_final = max(0, min(255, r_final))
+                g_final = max(0, min(255, g_final))
+                b_final = max(0, min(255, b_final))
 
-                if i < 3:
-                    chart_logger.info(f"EliteScoreChart DEBUG Bar {i}: BaseInterpolatedColor='{color_str}', OpacityVal={opacity_val:.2f} -> FinalRGBA='{final_rgba_str_being_appended}'")
+                # Calculate opacity: inverse to signal_strength
+                # High strength (s=1) -> min_opacity; Low strength (s=0) -> max_opacity
+                current_opacity = max_opacity_for_weak_signal - (s * (max_opacity_for_weak_signal - min_opacity_for_strong_signal))
+                current_opacity = max(min_opacity_for_strong_signal, min(max_opacity_for_weak_signal, current_opacity)) # Clip
 
-            if final_bar_colors_with_opacity:
-                chart_logger.info(f"EliteScoreChart DEBUG: final_bar_colors_with_opacity (first 3): {final_bar_colors_with_opacity[:3]}")
-            else:
-                chart_logger.warning("EliteScoreChart DEBUG: final_bar_colors_with_opacity list is empty.")
+                final_bar_colors_and_opacities.append(f'rgba({r_final},{g_final},{b_final},{current_opacity:.2f})')
+
+                if i < 3: # Log for first 3 bars
+                    chart_logger.info(
+                        f"EliteScoreChart VisualDEBUG Bar {i}: Score={score:.2f}, SignalStr={s:.2f} -> "
+                        f"BaseRGB={base_rgb} -> InterpolatedRGB=({r_final},{g_final},{b_final}), Opacity={current_opacity:.2f} -> "
+                        f"FinalRGBA='{final_bar_colors_and_opacities[-1]}'"
+                    )
 
             fig.add_trace(go.Bar(
                 y=y_indices,
                 x=plot_df[col_elite_score].fillna(0).values,
                 name='Elite Impact Score',
                 orientation='h',
-                marker_color=final_bar_colors_with_opacity, # Apply final colors with intensity and opacity
+                marker_color=final_bar_colors_and_opacities, # Apply NEW colors with intensity and opacity
                 hovertext=hovers,
                 hoverinfo='text'
             ))

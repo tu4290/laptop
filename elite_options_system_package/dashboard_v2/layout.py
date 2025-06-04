@@ -99,26 +99,21 @@ ENHANCED_BLURBS = {
     <h3>Elite Impact Score</h3>
     <p>This chart visualizes the <b>Elite Impact Score</b> for each strike price. This score is a composite metric indicating the potential market significance of a strike based on a confluence of factors including SDAG/DAG, market structure, and flow dynamics.</p>
     <ul>
-        <li><b>Bar Direction & Color:</b>
+        <li><b>Bar Color (based on Score Magnitude & Sign):</b>
             <ul>
-                <li>Bars extending to the <b>right (typically green)</b> represent a positive Elite Impact Score.</li>
-                <li>Bars extending to the <b>left (typically red)</b> represent a negative Elite Impact Score.</li>
+                <li><b>Positive Scores:</b> Transition from <b>Blue</b> (near neutral) to <b>Pale Green</b> (moderate positive) to <b>Vivid Green</b> (strong positive).</li>
+                <li><b>Negative Scores:</b> Transition from <b>Orange</b> (near neutral) to <b>Pale Red</b> (moderate negative) to <b>Vivid Red</b> (strong negative).</li>
             </ul>
         </li>
-        <li><b>Color Intensity (Vividness):</b>
+        <li><b>Visual Cues driven by Signal Strength:</b>
             <ul>
-                <li>A <b>more vivid/saturated</b> bar color indicates higher <b>Signal Strength</b> for the score.</li>
-                <li>A <b>paler/desaturated</b> bar color indicates lower Signal Strength.</li>
+                <li><b>Color Vividness:</b> Higher Signal Strength results in a more vivid/saturated version of the bar's base color. Lower Signal Strength results in a paler/desaturated version.</li>
+                <li><b>Bar Opacity (Transparency):</b> Higher Signal Strength results in a <i>more transparent</i> (less opaque) bar. Lower Signal Strength results in a <i>more solid</i> (less transparent) bar. This highlights strong signals with vividness while making weaker signals more solid but paler.</li>
             </ul>
         </li>
-        <li><b>Bar Opacity (Transparency):</b>
-            <ul>
-                <li>A <b>more solid (less transparent)</b> bar indicates higher <b>Prediction Confidence</b> in the score.</li>
-                <li>A <b>more transparent</b> bar indicates lower Prediction Confidence.</li>
-            </ul>
-        </li>
+        <li><b>Prediction Confidence:</b> Available in the hover text for each bar.</li>
     </ul>
-    <p>Hover over each bar for precise values.</p>
+    <p>Hover over each bar for precise values. Colors, score thresholds, and opacity settings are configurable in <code>config_v2.json</code> under <code>elite_score_chart_config</code>.</p>
     </div>""",
     ID_NET_GREEK_FLOW_HEATMAP_CHART: """<div class="metric-blurb"><h3>Net Greek Flow & Pressure Heatmap</h3>...</div>""",
     "net_volval_comp": """<div class="metric-blurb">...</div>""",

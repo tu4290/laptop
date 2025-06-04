@@ -8,6 +8,7 @@ import traceback
 import logging
 from datetime import datetime, date, time
 from typing import Dict, Any, Optional, List, Union, Tuple, Callable
+from dataclasses import fields # Added import
 
 # Third-Party Imports
 import pandas as pd
@@ -145,11 +146,29 @@ class EnhancedDataProcessor:
         # Initialize Elite Impact Calculator
         if elite_impact_module_available and EliteImpactCalculator and EliteConfig:
             try:
-                self.elite_calculator = EliteImpactCalculator(EliteConfig()) # Using default config for now
-                init_logger.info("EliteImpactCalculator instance created successfully.")
+                # Read calculator settings from the main config
+                calc_settings = self.processor_config.get("elite_score_chart_config", {}).get("calculator_settings", {})
+                init_logger.info(f"EliteImpactCalculator: Loaded calculator_settings from config: {calc_settings}")
+
+                # Prepare parameters for EliteConfig, using its defaults if a setting is missing from config
+                # This assumes EliteConfig is imported.
+                elite_config_fields = {f.name for f in fields(EliteConfig)} # Get valid field names from EliteConfig dataclass
+
+                elite_cfg_params_from_config = {}
+                for key, value in calc_settings.items():
+                    if key in elite_config_fields:
+                        elite_cfg_params_from_config[key] = value
+                    else:
+                        init_logger.warning(f"EliteImpactCalculator: Unknown key '{key}' found in calculator_settings from config. It will be ignored.")
+
+                init_logger.info(f"EliteImpactCalculator: Initializing EliteConfig with params: {elite_cfg_params_from_config}")
+                current_elite_config = EliteConfig(**elite_cfg_params_from_config)
+
+                self.elite_calculator = EliteImpactCalculator(config=current_elite_config) # Pass the configured object
+                init_logger.info("EliteImpactCalculator instance created successfully with custom configuration.")
             except Exception as e_init_elite_calc:
                 self.elite_calculator = None
-                init_logger.error(f"Failed to instantiate EliteImpactCalculator: {e_init_elite_calc}", exc_info=True)
+                init_logger.error(f"Failed to instantiate EliteImpactCalculator with custom configuration: {e_init_elite_calc}", exc_info=True)
         else:
             self.elite_calculator = None
             init_logger.warning("EliteImpactCalculator not available or not imported. Elite calculations will be skipped.")

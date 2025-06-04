@@ -41,6 +41,35 @@
     "ohlcv_num_days_history": 45,
     "iv_approx_target_dte": 5
   },
+  "elite_score_chart_config": {
+    "visual_settings": {
+      "strong_positive_color_rgb": "0,180,0",
+      "moderate_positive_color_rgb": "144,238,144",
+      "neutral_positive_color_rgb": "135,206,250",
+      "neutral_negative_color_rgb": "255,165,0",
+      "moderate_negative_color_rgb": "250,128,114",
+      "strong_negative_color_rgb": "220,20,60",
+      "score_threshold_strong_positive": 0.75,
+      "score_threshold_moderate_positive": 0.25,
+      "score_threshold_strong_negative": -0.75,
+      "score_threshold_moderate_negative": -0.25,
+      "min_opacity_for_strong_signal": 0.3,
+      "max_opacity_for_weak_signal": 0.9,
+      "default_signal_strength_fillna_for_visuals": 0.0
+    },
+    "calculator_settings": {
+      "regime_detection_enabled": true,
+      "cross_expiration_enabled": true,
+      "flow_classification_enabled": true,
+      "volatility_surface_enabled": true,
+      "momentum_detection_enabled": true,
+      "enable_sdag_calculation": true,
+      "enable_dag_calculation": true,
+      "enable_advanced_greeks": true,
+      "expiration_decay_lambda": 0.1,
+      "skew_adjustment_alpha": 1.0
+    }
+  },
   "data_fetcher_settings": {
     "api_timeout_seconds": 45,
     "max_retries": 3,
