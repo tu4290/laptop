@@ -95,7 +95,31 @@ ID_TAB_SDAG_DIAGNOSTICS = "tab-sdag-diagnostics"
 ENHANCED_BLURBS = {
     "mspi_heatmap": """<div class="metric-blurb"><h3>MSPI Heatmap / Alt View</h3>...</div>""", 
     "net_value_heatmap": """<div class="metric-blurb">...</div>""",
-    "mspi_components": """<div class="metric-blurb">...</div>""",
+    "mspi_components": """<div class="metric-blurb">
+    <h3>Elite Impact Score</h3>
+    <p>This chart visualizes the <b>Elite Impact Score</b> for each strike price. This score is a composite metric indicating the potential market significance of a strike based on a confluence of factors including SDAG/DAG, market structure, and flow dynamics.</p>
+    <ul>
+        <li><b>Bar Direction & Color:</b>
+            <ul>
+                <li>Bars extending to the <b>right (typically green)</b> represent a positive Elite Impact Score.</li>
+                <li>Bars extending to the <b>left (typically red)</b> represent a negative Elite Impact Score.</li>
+            </ul>
+        </li>
+        <li><b>Color Intensity (Vividness):</b>
+            <ul>
+                <li>A <b>more vivid/saturated</b> bar color indicates higher <b>Signal Strength</b> for the score.</li>
+                <li>A <b>paler/desaturated</b> bar color indicates lower Signal Strength.</li>
+            </ul>
+        </li>
+        <li><b>Bar Opacity (Transparency):</b>
+            <ul>
+                <li>A <b>more solid (less transparent)</b> bar indicates higher <b>Prediction Confidence</b> in the score.</li>
+                <li>A <b>more transparent</b> bar indicates lower Prediction Confidence.</li>
+            </ul>
+        </li>
+    </ul>
+    <p>Hover over each bar for precise values.</p>
+    </div>""",
     ID_NET_GREEK_FLOW_HEATMAP_CHART: """<div class="metric-blurb"><h3>Net Greek Flow & Pressure Heatmap</h3>...</div>""",
     "net_volval_comp": """<div class="metric-blurb">...</div>""",
     "combined_rolling_flow_chart": """<div class="metric-blurb">...</div>""",
@@ -186,7 +210,7 @@ def create_chart_card(chart_id: str, blurb_html: str) -> dbc.Card:
         display_title_accordion = "Elite Impact Score" # New title
         # NO dropdown is added here now.
         # graph_component_id will correctly be "mspi_components" via the default assignment earlier in the function.
-        blurb_html = ENHANCED_BLURBS.get("mspi_components", "Detailed analysis of Elite Impact Scores, confidence, and signal strength across strikes.") # Or a more generic blurb if "mspi_components" blurb is too specific. For now, using the existing key is fine.
+        blurb_html = ENHANCED_BLURBS.get("mspi_components", """<div class="metric-blurb"><p>Default blurb if not found: Detailed analysis of Elite Impact Scores.</p></div>""") # Use the updated blurb
 
     # Common logic for accordion and graph loading remains after this conditional block
     accordion_item = dbc.AccordionItem(
