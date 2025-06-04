@@ -107,7 +107,15 @@ DEFAULT_VISUALIZER_CONFIG: Dict[str, Any] = {
             "tdpi": {"sections": ["base_info", "tdpi_specific_values"]},
             "vri": {"sections": ["base_info", "vri_specific_values"]},
             "key_levels": {"sections": ["base_info", "core_metrics_context", "details_section"]},
-            "trading_signals": {"sections": ["base_info", "core_metrics_context", "details_section"]}
+            "trading_signals": {"sections": ["base_info", "core_metrics_context", "details_section"]},
+            "elite_score_display": {
+                "sections": ["base_info", "elite_score_details"],
+                "elite_score_details_keys": [
+                    "elite_impact_score",
+                    "prediction_confidence",
+                    "signal_strength"
+                ]
+            }
         }
     },
     "chart_specific_params": { 
@@ -433,6 +441,29 @@ class MSPIVisualizerV2:
                      value_data = safe_get_from_row(core_key)
                      if value_data is not None: temp_core_list.append(f"{display_label}: {self._format_hover_value(value_data, 3)}")
                 if temp_core_list: current_section_text_parts = ["--- Context ---"] + temp_core_list
+
+            elif section_key_name == "elite_score_details":
+                temp_elite_details_list = []
+                # Get the keys from the chart-specific config
+                elite_keys_to_show = current_chart_hover_rules.get("elite_score_details_keys", [])
+                for key_name in elite_keys_to_show:
+                    # Find the metric's config from the global overview_metrics_config for label, precision etc.
+                    metric_config = next((m_cfg for m_cfg in overview_metrics_config_list if m_cfg.get("key") == key_name), None)
+
+                    default_label = key_name.replace('_',' ').title()
+                    label_text = metric_config.get("label", default_label) if metric_config else default_label
+                    precision_val = metric_config.get("precision", 2) if metric_config else 2
+                    is_curr_val = metric_config.get("is_currency", False) if metric_config else False
+
+                    value_data = safe_get_from_row(key_name) # safe_get_from_row is already defined in the method
+                    if value_data is not None and pd.notna(value_data):
+                        # Make the main score bold
+                        display_label = f"<b>{label_text}</b>" if key_name == "elite_impact_score" else label_text
+                        temp_elite_details_list.append(f"{display_label}: {self._format_hover_value(value_data, precision_val, is_curr_val)}")
+                if temp_elite_details_list:
+                    # Add a section title if there are details
+                    current_section_text_parts = ["--- Elite Impact ---"] + temp_elite_details_list
+
             elif section_key_name == "details_section" and hover_main_config.get("show_details_section_default", True):
                 temp_details_list = []
                 for detail_key in details_keys_config_list:
@@ -1906,21 +1937,56 @@ class MSPIVisualizerV2:
             strike_map_for_hline = {float(f"{s:.2f}"): i for i, s in enumerate(unique_strikes_desc)}
 
 
-            hovers = [self._create_hover_text(r.to_dict(), chart_type="default") for _, r in plot_df.iterrows()]
+            hovers = [self._create_hover_text(r.to_dict(), chart_type="elite_score_display") for _, r in plot_df.iterrows()]
 
             # Use confidence for opacity
             opacities = pd.to_numeric(plot_df[col_confidence], errors='coerce').fillna(0.5).clip(0.2, 1.0).tolist()
 
-            # Bar colors based on score positive/negative
-            bar_colors = ['rgba(0, 150, 0, 1)' if score >= 0 else 'rgba(150, 0, 0, 1)' for score in plot_df[col_elite_score].fillna(0)]
+            # Process signal_strength for color intensity modulation
+            signal_strengths = pd.to_numeric(plot_df[col_signal_strength], errors='coerce').fillna(0.5).clip(0.0, 1.0).tolist()
 
-            # Apply opacity to each color
+            # Define base RGB tuples for color interpolation
+            VIVID_POS_RGB = (0, 150, 0)
+            PALE_POS_RGB = (100, 190, 100)
+            VIVID_NEG_RGB = (150, 0, 0)
+            PALE_NEG_RGB = (190, 100, 100)
+
+            # New logic for bar_colors (interpolated based on signal_strength)
+            bar_colors_interpolated = []
+            num_scores = len(plot_df[col_elite_score])
+            scores_list = plot_df[col_elite_score].fillna(0).tolist()
+
+            for i in range(num_scores):
+                score = scores_list[i]
+                s = signal_strengths[i] # Corresponding signal strength
+
+                if score >= 0:
+                    r_final = int(PALE_POS_RGB[0] * (1-s) + VIVID_POS_RGB[0] * s)
+                    g_final = int(PALE_POS_RGB[1] * (1-s) + VIVID_POS_RGB[1] * s)
+                    b_final = int(PALE_POS_RGB[2] * (1-s) + VIVID_POS_RGB[2] * s)
+                else:
+                    r_final = int(PALE_NEG_RGB[0] * (1-s) + VIVID_NEG_RGB[0] * s)
+                    g_final = int(PALE_NEG_RGB[1] * (1-s) + VIVID_NEG_RGB[1] * s)
+                    b_final = int(PALE_NEG_RGB[2] * (1-s) + VIVID_NEG_RGB[2] * s)
+
+                bar_colors_interpolated.append(f'rgba({r_final},{g_final},{b_final},1)')
+
+            bar_colors = bar_colors_interpolated # Use the new interpolated colors for opacity application
+
+            # Apply opacity to each color (existing robust logic)
             final_bar_colors_with_opacity = []
-            for i, color_str in enumerate(bar_colors):
-                opacity_val = opacities[i]
-                # Assuming color_str is like 'rgba(r,g,b,a)'
+            num_items = len(bar_colors)
+            for i in range(num_items):
+                color_str = bar_colors[i]
+                # Defensive: ensure opacities list is long enough, use default if not.
+                opacity_val = opacities[i] if i < len(opacities) else 0.5 # Default opacity if lists mismatch
+
                 parts = color_str.replace('rgba(', '').replace(')', '').split(',')
-                final_bar_colors_with_opacity.append(f"rgba({parts[0]},{parts[1]},{parts[2]},{opacity_val})")
+                if len(parts) >= 3: # Check if we have at least R, G, B
+                    final_bar_colors_with_opacity.append(f"rgba({parts[0].strip()},{parts[1].strip()},{parts[2].strip()},{opacity_val})")
+                else:
+                    # Fallback if color_str parsing fails, though unlikely with defined bar_colors
+                    final_bar_colors_with_opacity.append(color_str) # Append original color
 
 
             fig.add_trace(go.Bar(
