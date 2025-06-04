@@ -1954,53 +1954,62 @@ class MSPIVisualizerV2:
 
             hovers = [self._create_hover_text(r.to_dict(), chart_type="elite_score_display") for _, r in plot_df.iterrows()]
 
-            # --- START TEMPORARY DEBUGGING LOGIC FOR COLORS ---
-            chart_logger.info("EliteScoreChart: Entering TEMPORARY simplified color logic for debugging.")
-            simplified_bar_colors = []
+            # Use confidence for opacity
+            opacities = pd.to_numeric(plot_df.get(col_confidence, pd.Series(dtype=float)), errors='coerce').fillna(0.5).clip(0.2, 1.0).tolist()
 
-            # Ensure scores_list_debug uses the correct column name from plot_df
-            scores_list_debug = plot_df[col_elite_score].fillna(0).tolist()
+            # Process signal_strength for color intensity modulation
+            signal_strengths_series = plot_df.get(col_signal_strength, pd.Series(dtype=float))
+            signal_strengths = pd.to_numeric(signal_strengths_series, errors='coerce').fillna(0.5).clip(0.0, 1.0).tolist()
 
-            # For logging purposes, get these lists too
-            # Ensure .get uses the correct column name and provide a default Series for robustness
-            signal_strengths_debug_list_series = plot_df.get(col_signal_strength, pd.Series(dtype=float))
-            signal_strengths_debug_list = pd.to_numeric(signal_strengths_debug_list_series, errors='coerce').fillna(0.5).clip(0.0, 1.0).tolist()
+            # Define base RGB tuples for color interpolation
+            VIVID_POS_RGB = (0, 150, 0)
+            PALE_POS_RGB = (100, 190, 100)
+            VIVID_NEG_RGB = (150, 0, 0)
+            PALE_NEG_RGB = (190, 100, 100)
 
-            opacities_debug_list_series = plot_df.get(col_confidence, pd.Series(dtype=float))
-            opacities_debug_list = pd.to_numeric(opacities_debug_list_series, errors='coerce').fillna(0.5).clip(0.2, 1.0).tolist()
+            # New logic for bar_colors (interpolated based on signal_strength)
+            bar_colors_interpolated = []
+            # Ensure scores_list uses the correct column name from plot_df
+            scores_list = plot_df[col_elite_score].fillna(0).tolist()
+            num_scores = len(scores_list) # Recalculate num_scores based on the actual list
 
-            for i in range(len(scores_list_debug)):
-                score = scores_list_debug[i]
-                base_color_name = "GREEN" if score >= 0 else "RED"
-                # Use fully opaque basic colors for this temporary test
-                color_to_assign = 'rgba(0, 150, 0, 1)' if score >= 0 else 'rgba(150, 0, 0, 1)'
-                simplified_bar_colors.append(color_to_assign)
+            for i in range(num_scores):
+                score = scores_list[i]
+                # Ensure signal_strengths list is accessed safely
+                s = signal_strengths[i] if i < len(signal_strengths) else 0.5 # Default signal_strength if lists mismatch
 
-                if i < 5: # Log details for the first 5 bars
-                    # Ensure strike_val_for_log uses the correct column name from plot_df
-                    # 'strike_numeric' is the reindexed column. self.col_strike might be original name.
-                    strike_val_for_log = plot_df['strike_numeric'].iloc[i] if 'strike_numeric' in plot_df.columns and i < len(plot_df) else 'N/A'
-                    # If self.col_strike is different and also present (e.g. as non-numeric text), it could be logged too:
-                    # original_strike_display = plot_df[self.col_strike].iloc[i] if self.col_strike in plot_df.columns and i < len(plot_df) else ''
+                if score >= 0:
+                    r_final = int(PALE_POS_RGB[0] * (1-s) + VIVID_POS_RGB[0] * s)
+                    g_final = int(PALE_POS_RGB[1] * (1-s) + VIVID_POS_RGB[1] * s)
+                    b_final = int(PALE_POS_RGB[2] * (1-s) + VIVID_POS_RGB[2] * s)
+                else:
+                    r_final = int(PALE_NEG_RGB[0] * (1-s) + VIVID_NEG_RGB[0] * s)
+                    g_final = int(PALE_NEG_RGB[1] * (1-s) + VIVID_NEG_RGB[1] * s)
+                    b_final = int(PALE_NEG_RGB[2] * (1-s) + VIVID_NEG_RGB[2] * s)
 
-                    sig_str = signal_strengths_debug_list[i] if i < len(signal_strengths_debug_list) else 'N/A'
-                    conf_val = opacities_debug_list[i] if i < len(opacities_debug_list) else 'N/A'
-                    chart_logger.info(
-                        f"EliteScoreChart DEBUG Bar {i} (Strike: {strike_val_for_log}): "
-                        f"Score={score:.4f} -> BasicColorDecision='{base_color_name}', AssignedColor='{color_to_assign}', "
-                        f"RawSignalStr={sig_str}, RawOpacityConf={conf_val}"
-                    )
+                bar_colors_interpolated.append(f'rgba({r_final},{g_final},{b_final},1)') # Alpha is 1 here, opacity applied next
 
-            debug_marker_colors = simplified_bar_colors
-            chart_logger.info(f"EliteScoreChart: Using simplified_bar_colors for trace (first 5): {debug_marker_colors[:5]}")
-            # --- END TEMPORARY DEBUGGING LOGIC FOR COLORS ---
+            # Apply opacity to each color (existing robust logic)
+            final_bar_colors_with_opacity = []
+            num_items = len(bar_colors_interpolated)
+            for i in range(num_items):
+                color_str = bar_colors_interpolated[i]
+                # Defensive: ensure opacities list is long enough, use default if not.
+                opacity_val = opacities[i] if i < len(opacities) else 0.5 # Default opacity if lists mismatch
+
+                parts = color_str.replace('rgba(', '').replace(')', '').split(',')
+                if len(parts) >= 3: # Check if we have at least R, G, B
+                    final_bar_colors_with_opacity.append(f"rgba({parts[0].strip()},{parts[1].strip()},{parts[2].strip()},{opacity_val})")
+                else:
+                    # Fallback if color_str parsing fails, though unlikely with defined bar_colors_interpolated
+                    final_bar_colors_with_opacity.append(color_str) # Append original color, which has alpha=1
 
             fig.add_trace(go.Bar(
                 y=y_indices,
                 x=plot_df[col_elite_score].fillna(0).values,
                 name='Elite Impact Score',
                 orientation='h',
-                marker_color=debug_marker_colors, # Apply DEBUG colors
+                marker_color=final_bar_colors_with_opacity, # Apply final colors with intensity and opacity
                 hovertext=hovers,
                 hoverinfo='text'
             ))
