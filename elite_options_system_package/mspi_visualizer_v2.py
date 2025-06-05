@@ -1883,9 +1883,11 @@ class MSPIVisualizerV2:
         chart_logger.info(f"EliteScoreChart DEBUG: Raw visual_settings from config: {loaded_chart_config_block}") # Renamed visual_settings to loaded_chart_config_block for clarity before merge
         # Log the specific positive color strings from config
         if isinstance(loaded_chart_config_block, dict): # Check if it's a dict before .get
-            chart_logger.info(f"EliteScoreChart DEBUG: Config strong_positive_color_rgb: {loaded_chart_config_block.get('score_categories', {}).get('Strong Positive', {}).get('base_color_rgba')}")
-            chart_logger.info(f"EliteScoreChart DEBUG: Config moderate_positive_color_rgb: {loaded_chart_config_block.get('score_categories', {}).get('Moderate Positive', {}).get('base_color_rgba')}")
-            chart_logger.info(f"EliteScoreChart DEBUG: Config neutral_positive_color_rgb: {loaded_chart_config_block.get('score_categories', {}).get('Weak Positive', {}).get('base_color_rgba')}") # Assuming Weak Positive is the neutral positive for >0 scores
+            user_visual_settings_for_log = loaded_chart_config_block.get('visual_settings', {})
+            if not isinstance(user_visual_settings_for_log, dict): user_visual_settings_for_log = {} # Ensure it's a dict for safe gets
+            chart_logger.info(f"EliteScoreChart DEBUG: User Config strong_positive_color_rgb: {user_visual_settings_for_log.get('score_categories', {}).get('Strong Positive', {}).get('base_color_rgb_str')}")
+            chart_logger.info(f"EliteScoreChart DEBUG: User Config moderate_positive_color_rgb: {user_visual_settings_for_log.get('score_categories', {}).get('Moderate Positive', {}).get('base_color_rgb_str')}")
+            chart_logger.info(f"EliteScoreChart DEBUG: User Config neutral_positive_color_rgb: {user_visual_settings_for_log.get('score_categories', {}).get('Weak Positive', {}).get('base_color_rgb_str')}")
         else:
             chart_logger.info("EliteScoreChart DEBUG: loaded_chart_config_block is not a dict, cannot log specific color strings from it.")
 
@@ -1898,12 +1900,23 @@ class MSPIVisualizerV2:
             final_chart_config = DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL.copy()
             chart_logger.info("Using method-level default 'elite_score_chart_config' as it was not found or invalid in application config.")
 
-        SCORE_CATEGORIES = final_chart_config.get("score_categories", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["score_categories"])
-        VISUAL_ADJUSTMENTS = final_chart_config.get("visual_adjustments", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["visual_adjustments"])
+        # Extract the 'visual_settings' sub-dictionary from the merged configuration.
+        # Fall back to final_chart_config itself if 'visual_settings' is not present (e.g. if config is flat, though default is not)
+        # Fall further back to an empty dict if neither has the settings.
+        # Given DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL is flat, and user config is nested under 'visual_settings',
+        # the merged 'final_chart_config' will have top-level default keys AND a 'visual_settings' key from user.
+        # So, we prioritize 'visual_settings' from the user, then fall back to top-level (defaults).
+
+        user_visual_settings = final_chart_config.get("visual_settings", {})
+        if not isinstance(user_visual_settings, dict): user_visual_settings = {}
+
+
+        SCORE_CATEGORIES = user_visual_settings.get("score_categories", final_chart_config.get("score_categories", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["score_categories"]))
+        VISUAL_ADJUSTMENTS = user_visual_settings.get("visual_adjustments", final_chart_config.get("visual_adjustments", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["visual_adjustments"]))
         OPACITY_SETTINGS = VISUAL_ADJUSTMENTS.get("opacity_by_signal_strength", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["visual_adjustments"]["opacity_by_signal_strength"])
         VIVIDNESS_SETTINGS = VISUAL_ADJUSTMENTS.get("vividness_by_signal_strength", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["visual_adjustments"]["vividness_by_signal_strength"])
-        CHART_COL_NAMES = final_chart_config.get("column_names", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["column_names"])
-        PRICE_FILTER_DEFAULT_PCT = final_chart_config.get("price_range_filter_default_pct", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["price_range_filter_default_pct"])
+        CHART_COL_NAMES = user_visual_settings.get("column_names", final_chart_config.get("column_names", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["column_names"]))
+        PRICE_FILTER_DEFAULT_PCT = user_visual_settings.get("price_range_filter_default_pct", final_chart_config.get("price_range_filter_default_pct", DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL["price_range_filter_default_pct"]))
 
         col_elite_score = CHART_COL_NAMES.get("elite_score", "elite_impact_score")
         col_signal_strength = CHART_COL_NAMES.get("signal_strength", "signal_strength")
@@ -1912,13 +1925,13 @@ class MSPIVisualizerV2:
         # Log parsed RGB tuples (moved slightly down after SCORE_CATEGORIES is fully defined by merge)
         # This requires SCORE_CATEGORIES to be defined from final_chart_config first.
         # Let's log them after SCORE_CATEGORIES, OPACITY_SETTINGS, etc. are set.
-        chart_logger.info(f"EliteScoreChart DEBUG: Final SCORE_CATEGORIES after merge: {SCORE_CATEGORIES}")
-        chart_logger.info(f"EliteScoreChart DEBUG: Parsed STRONG_POS_VIVID_GREEN_RGB (from Strong Positive category): {SCORE_CATEGORIES.get('Strong Positive', {}).get('base_color_rgba')}")
-        chart_logger.info(f"EliteScoreChart DEBUG: Parsed MODERATE_POS_PALE_GREEN_RGB (from Moderate Positive category): {SCORE_CATEGORIES.get('Moderate Positive', {}).get('base_color_rgba')}")
-        chart_logger.info(f"EliteScoreChart DEBUG: Parsed NEUTRAL_POS_BLUE_RGB (from Weak Positive category): {SCORE_CATEGORIES.get('Weak Positive', {}).get('base_color_rgba')}")
-        chart_logger.info(f"EliteScoreChart DEBUG: Parsed NEUTRAL_NEG_ORANGE_RGB (from Weak Negative category): {SCORE_CATEGORIES.get('Weak Negative', {}).get('base_color_rgba')}")
-        chart_logger.info(f"EliteScoreChart DEBUG: Parsed MODERATE_NEG_PALE_RED_RGB (from Moderate Negative category): {SCORE_CATEGORIES.get('Moderate Negative', {}).get('base_color_rgba')}")
-        chart_logger.info(f"EliteScoreChart DEBUG: Parsed STRONG_NEG_VIVID_RED_RGB (from Strong Negative category): {SCORE_CATEGORIES.get('Strong Negative', {}).get('base_color_rgba')}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Final SCORE_CATEGORIES after merge and selection: {SCORE_CATEGORIES}")
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed STRONG_POS_VIVID_GREEN_RGB (from Strong Positive category): {SCORE_CATEGORIES.get('Strong Positive', {}).get('base_color_rgb_str')}") # Changed from base_color_rgba
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed MODERATE_POS_PALE_GREEN_RGB (from Moderate Positive category): {SCORE_CATEGORIES.get('Moderate Positive', {}).get('base_color_rgb_str')}") # Changed from base_color_rgba
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed NEUTRAL_POS_BLUE_RGB (from Weak Positive category): {SCORE_CATEGORIES.get('Weak Positive', {}).get('base_color_rgb_str')}") # Changed from base_color_rgba
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed NEUTRAL_NEG_ORANGE_RGB (from Weak Negative category): {SCORE_CATEGORIES.get('Weak Negative', {}).get('base_color_rgb_str')}") # Changed from base_color_rgba
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed MODERATE_NEG_PALE_RED_RGB (from Moderate Negative category): {SCORE_CATEGORIES.get('Moderate Negative', {}).get('base_color_rgb_str')}") # Changed from base_color_rgba
+        chart_logger.info(f"EliteScoreChart DEBUG: Parsed STRONG_NEG_VIVID_RED_RGB (from Strong Negative category): {SCORE_CATEGORIES.get('Strong Negative', {}).get('base_color_rgb_str')}") # Changed from base_color_rgba
 
         try:
             if not isinstance(processed_data, pd.DataFrame) or processed_data.empty:
