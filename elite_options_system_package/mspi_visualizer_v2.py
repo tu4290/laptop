@@ -2297,7 +2297,7 @@ class MSPIVisualizerV2:
                     title_text="Score Categories",
                     orientation=legend_cfg.get("orientation", "v"), yanchor=legend_cfg.get("y_anchor", "top"),
                     y=legend_cfg.get("y_pos", 1), xanchor=legend_cfg.get("x_anchor", "left"),
-                    x=legend_cfg.get("x_pos", 1.02), traceorder=legend_cfg.get("trace_order", "reversed")
+                    x=legend_cfg.get("x_pos", 1.02), traceorder=legend_cfg.get("trace_order", "reversed"))
                 ),
                 hovermode="y unified" # Shows hover for all traces at a given y (strike)
             )
