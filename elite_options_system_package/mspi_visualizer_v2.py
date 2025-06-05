@@ -1854,12 +1854,12 @@ class MSPIVisualizerV2:
         # Default config structure for this chart, to be merged with main config
         DEFAULT_ELITE_SCORE_CHART_CONFIG_METHOD_LEVEL = {
             "score_categories": {
-                "Strong Positive": {"min_score": 0.75, "base_color_rgba": "rgba(0,100,0,1)", "legend_name": "Strong Pos (Score >= 0.75)"},
-                "Moderate Positive": {"min_score": 0.25, "base_color_rgba": "rgba(0,128,0,1)", "legend_name": "Mod Pos (0.25 <= Score < 0.75)"},
-                "Weak Positive": {"min_score": 0.0, "base_color_rgba": "rgba(144,238,144,1)", "legend_name": "Weak Pos (0.0 <= Score < 0.25)"},
-                "Weak Negative": {"min_score": -0.25, "base_color_rgba": "rgba(250,128,114,1)", "legend_name": "Weak Neg (-0.25 <= Score < 0.0)"},
-                "Moderate Negative": {"min_score": -0.75, "base_color_rgba": "rgba(220,20,60,1)", "legend_name": "Mod Neg (-0.75 <= Score < -0.25)"},
-                "Strong Negative": {"min_score": -float('inf'), "base_color_rgba": "rgba(139,0,0,1)", "legend_name": "Strong Neg (Score < -0.75)"}
+                "Strong Positive": {"min_score": 0.75, "base_color_rgb_str": "0,180,0", "legend_name": "Strong Pos (Score >= 0.75)"},
+                "Moderate Positive": {"min_score": 0.25, "base_color_rgb_str": "144,238,144", "legend_name": "Mod Pos (0.25 <= Score < 0.75)"},
+                "Weak Positive": {"min_score": 0.0, "base_color_rgb_str": "135,206,250", "legend_name": "Weak Pos (0.0 <= Score < 0.25)"}, # Mapped from Neutral Positive
+                "Weak Negative": {"min_score": -0.25, "base_color_rgb_str": "255,165,0", "legend_name": "Weak Neg (-0.25 <= Score < 0.0)"}, # Mapped from Neutral Negative
+                "Moderate Negative": {"min_score": -0.75, "base_color_rgb_str": "250,128,114", "legend_name": "Mod Neg (-0.75 <= Score < -0.25)"},
+                "Strong Negative": {"min_score": -float('inf'), "base_color_rgb_str": "220,20,60", "legend_name": "Strong Neg (Score < -0.75)"}
             },
             "visual_adjustments": { # Renamed from opacity_signal_strength_scaling and color_vividness_signal_strength_scaling
                 "opacity_by_signal_strength": {"min_opacity": 0.3, "max_opacity": 1.0},
@@ -2026,7 +2026,7 @@ class MSPIVisualizerV2:
             # --- Helper function for color and opacity adjustments ---
             # This function is now more of a wrapper since the base color is selected before calling it in the loop.
             # However, the actual color string parsing and adjustments are still done here.
-            def get_adjusted_color_for_bar(base_rgb_tuple_param: Tuple[int,int,int], strength_scaled: float, category_name_for_debug: str) -> str:
+            def get_adjusted_color_for_bar(base_rgb_tuple_param: Tuple[int,int,int], s_strength_scaled: float, category_name_for_debug: str) -> str:
                 # category_props = SCORE_CATEGORIES.get(category_name) # Not needed if base_rgb_tuple is passed directly
                 # if not category_props: return "rgba(128,128,128,0.5)"
 
@@ -2044,7 +2044,7 @@ class MSPIVisualizerV2:
                 min_op = OPACITY_SETTINGS.get("min_opacity", 0.3)
                 max_op = OPACITY_SETTINGS.get("max_opacity", 1.0)
                 # Opacity: High strength (1.0) => max_op; Low strength (0.0) => min_op
-                final_opacity = min_op + (max_op - min_op) * strength_scaled
+                final_opacity = min_op + (max_op - min_op) * s_strength_scaled
                 final_opacity = max(0.0, min(1.0, final_opacity))
 
                 # 2. Adjust color vividness based on signal_strength_scaled
@@ -2059,7 +2059,7 @@ class MSPIVisualizerV2:
                 # Effective strength for vividness: interp_strength goes from pale_intensity_factor (at strength_scaled=0) to 1.0 (at strength_scaled=1)
                 # This means at strength_scaled=0, color is pale_intensity_factor * base + (1-pale_intensity_factor) * pale_target
                 # At strength_scaled=1, color is 1.0 * base + 0 * pale_target = base
-                vividness_interp_factor = pale_intensity_factor + (1.0 - pale_intensity_factor) * strength_scaled
+                vividness_interp_factor = pale_intensity_factor + (1.0 - pale_intensity_factor) * s_strength_scaled
 
                 r_final_adj = int(r_base * vividness_interp_factor + r_pale_target * (1 - vividness_interp_factor))
                 g_final_adj = int(g_base * vividness_interp_factor + g_pale_target * (1 - vividness_interp_factor))
@@ -2099,16 +2099,19 @@ class MSPIVisualizerV2:
                 # Then parse it to an RGB tuple.
                 category_props_for_bar = SCORE_CATEGORIES.get(current_category_name)
                 if category_props_for_bar:
-                    base_color_rgba_str = category_props_for_bar.get("base_color_rgba", "rgba(128,128,128,1)")
+                    base_color_rgb_str_val = category_props_for_bar.get("base_color_rgb_str", "128,128,128") # Get new key, new default format
                     try:
-                        # Use _parse_color_string to get a consistent "rgba(r,g,b,a)" string, then extract r,g,b
-                        parsed_rgba_for_base = self._parse_color_string(base_color_rgba_str, 1.0)
-                        rgb_parts = parsed_rgba_for_base.replace('rgba(', '').replace(')', '').split(',')
-                        base_rgb_tuple_for_this_bar = (int(rgb_parts[0]), int(rgb_parts[1]), int(rgb_parts[2]))
-                        log_category_descriptor = current_category_name # Use the name from categorization
+                        # Direct parsing for "R,G,B"
+                        rgb_parts = list(map(int, base_color_rgb_str_val.split(',')))
+                        if len(rgb_parts) == 3: # Ensure it's R,G,B
+                            base_rgb_tuple_for_this_bar = (rgb_parts[0], rgb_parts[1], rgb_parts[2])
+                            log_category_descriptor = current_category_name
+                        else:
+                            chart_logger.error(f"Invalid RGB string format '{base_color_rgb_str_val}' for category '{current_category_name}'. Expected 3 parts.")
+                            # base_rgb_tuple_for_this_bar remains grey
                     except Exception as e_base_parse:
-                        chart_logger.error(f"Error parsing base_color_rgba '{base_color_rgba_str}' for category '{current_category_name}': {e_base_parse}")
-                        # base_rgb_tuple_for_this_bar remains grey, log_category_descriptor remains Unknown
+                        chart_logger.error(f"Error parsing base_color_rgb_str '{base_color_rgb_str_val}' for category '{current_category_name}': {e_base_parse}")
+                        # base_rgb_tuple_for_this_bar remains grey
                 else:
                     chart_logger.warning(f"Category '{current_category_name}' not found in SCORE_CATEGORIES for bar {i}. Using default grey.")
 
@@ -2141,9 +2144,21 @@ class MSPIVisualizerV2:
                 bars_for_this_category_trace = [bar_detail for bar_detail in all_bars_details if bar_detail['category_name'] == category_name_legend]
 
                 if not bars_for_this_category_trace:
+                    # For dummy traces (when a category has no bars but we want it in the legend)
+                    # Use its configured base color, but make it semi-transparent.
+                    base_rgb_str_dummy = category_props_legend.get("base_color_rgb_str", "128,128,128")
+                    dummy_marker_color = "rgba(128,128,128,0.5)" # Default fallback
+                    try:
+                        r_dummy, g_dummy, b_dummy = map(int, base_rgb_str_dummy.split(','))
+                        dummy_marker_color = f'rgba({r_dummy},{g_dummy},{b_dummy},0.5)'
+                    except ValueError as e_dummy_parse: # More specific exception
+                        chart_logger.warning(f"Invalid RGB string format or content in '{base_rgb_str_dummy}' for dummy trace '{category_name_legend}': {e_dummy_parse}. Using fallback.")
+                    except Exception as e_dummy_generic: # Catch other unexpected errors
+                        chart_logger.warning(f"Generic error parsing base_color_rgb_str '{base_rgb_str_dummy}' for dummy trace '{category_name_legend}': {e_dummy_generic}. Using fallback.")
+
                     fig.add_trace(go.Bar(
                         y=[None], x=[None], name=category_props_legend.get("legend_name", category_name_legend),
-                        orientation='h', marker_color=category_props_legend.get("base_color_rgba","rgba(128,128,128,0.5)"),
+                        orientation='h', marker_color=dummy_marker_color,
                         legendgroup=category_name_legend
                     ))
                     continue
