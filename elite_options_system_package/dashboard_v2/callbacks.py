@@ -134,6 +134,7 @@ try:
     from enhanced_data_processor_v2 import EnhancedDataProcessor
     from integrated_strategies_v2 import IntegratedTradingSystem
     from mspi_visualizer_v2 import MSPIVisualizerV2
+    from .elite_darkpool_analyzer import DarkpoolAnalyticsConfig # ADDED IMPORT
     _backend_modules_imported_fully_cb = True
     logger.info("CALLBACKS.PY: Backend module classes imported successfully for type hinting and instance checks.")
 except ImportError as _backend_module_import_error_cb_final:

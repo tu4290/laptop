@@ -1176,184 +1176,198 @@ class EliteDarkpoolAnalyzer:
         return df_copy
 
     def _filter_by_strike_clustering(self, ranked_df: pd.DataFrame) -> pd.DataFrame:
+        # Current config: self.config.strike_clustering_pct_threshold
         return ranked_df
 
     def _determine_support_resistance(self, ranked_df: pd.DataFrame) -> pd.DataFrame:
-        cfg_cols_rep = self.config.cols_report
-        cfg_cols_in = self.config.cols_input
-        strike_col_df = cfg_cols_rep['strike']
+        cfg_cols_rep = self.config.report_column_map
+        cfg_cols_in = self.config.input_column_map
+        sr_cfg = self.config.sr_logic_config
+        strike_col_df = cfg_cols_rep.strike # This is the strike col name in ranked_df
 
-        # Ensure result columns exist even if we return early
-        cols_to_add = [cfg_cols_rep['level_type'], cfg_cols_rep['sr_rationale']]
-        for col in cols_to_add:
-            if col not in ranked_df.columns:
-                 ranked_df[col] = "Uncertain" if col == cfg_cols_rep['level_type'] else "S/R Not Determined"
+        result_df = ranked_df.copy()
+        # Ensure S/R columns exist, initialize if not
+        if cfg_cols_rep.level_type not in result_df.columns:
+            result_df[cfg_cols_rep.level_type] = "Uncertain"
+        if cfg_cols_rep.sr_rationale not in result_df.columns:
+            result_df[cfg_cols_rep.sr_rationale] = "S/R Not Determined"
 
+        if result_df.empty or self.strike_aggregated_metrics.empty:
+            if not result_df.empty:
+                result_df[cfg_cols_rep.level_type] = "Uncertain"
+                result_df[cfg_cols_rep.sr_rationale] = "Missing aggregated metrics for S/R."
+            return result_df
 
-        if ranked_df.empty or self.strike_aggregated_metrics.empty:
-            if not ranked_df.empty: # Add default values if ranked_df is not empty but metrics are
-                ranked_df[cfg_cols_rep['level_type']] = "Uncertain"
-                ranked_df[cfg_cols_rep['sr_rationale']] = "Missing aggregated metrics for S/R."
-            return ranked_df
-
-        # Determine the correct strike column name from strike_aggregated_metrics
-        # It should be self.config.cols_input['strike']
-        agg_strike_col = self.config.cols_input['strike']
+        # Strike column in strike_aggregated_metrics is from input_column_map
+        agg_strike_col = cfg_cols_in.strike
         if agg_strike_col not in self.strike_aggregated_metrics.columns:
+            # This check is important if strike_aggregated_metrics might not have the expected strike col
             print(f"Error (_determine_support_resistance): Strike column '{agg_strike_col}' not found in self.strike_aggregated_metrics.")
-            return ranked_df # Cannot proceed without strike in aggregated metrics
+            result_df[cfg_cols_rep.sr_rationale] = f"Agg strike col '{agg_strike_col}' missing."
+            return result_df
 
-        # Merge. Ensure 'strike' in ranked_df (which is cfg_cols_rep['strike']) is used for merging.
-        df_for_sr = pd.merge(ranked_df, self.strike_aggregated_metrics,
+        # Merge aggregated metrics. ranked_df uses report_column_map.strike (aliased as strike_col_df here)
+        # strike_aggregated_metrics uses input_column_map.strike (aliased as agg_strike_col here)
+        df_for_sr = pd.merge(result_df, self.strike_aggregated_metrics,
                              left_on=strike_col_df, right_on=agg_strike_col,
                              how='left')
 
-        # If merge created two strike columns due to different names (e.g. 'strike' vs 'STRIKE')
-        # and original ranked_df strike col name was different from agg_strike_col
+        # If merge created two strike columns due to different names and agg_strike_col was not same as strike_col_df
         if strike_col_df != agg_strike_col and agg_strike_col in df_for_sr.columns:
-             df_for_sr.drop(columns=[agg_strike_col], inplace=True)
+             df_for_sr.drop(columns=[agg_strike_col], inplace=True) # Keep the one from ranked_df (strike_col_df)
 
+        plausibility_threshold_for_sr = sr_cfg.plausibility_min_threshold_for_sr
 
-        plausibility_threshold_for_sr = self.config.sr_settings.get('plausibility_min_threshold', 0.3)
-        delta_std_factor = self.config.sr_settings.get('delta_std_factor', 0.5)
-        flow_std_factor = self.config.sr_settings.get('flow_std_factor', 0.5)
+        # Column names for delta and flow in the merged DataFrame (they came from strike_aggregated_metrics)
+        dxoi_col_name_in_merged_df = cfg_cols_in.dxoi
+        volmbs15_col_name_in_merged_df = cfg_cols_in.volmbs_15m
 
-        dxoi_col_agg_name = cfg_cols_in['dxoi']
-        volmbs15_col_agg_name = cfg_cols_in['volmbs_15m']
+        # Get the original series from strike_aggregated_metrics for threshold calculation
+        delta_series_for_threshold_calc = self.strike_aggregated_metrics.get(dxoi_col_name_in_merged_df, pd.Series(dtype=float))
+        flow_series_for_threshold_calc = self.strike_aggregated_metrics.get(volmbs15_col_name_in_merged_df, pd.Series(dtype=float))
 
-        delta_threshold = 0
-        if dxoi_col_agg_name in self.strike_aggregated_metrics.columns and not self.strike_aggregated_metrics[dxoi_col_agg_name].empty:
-            delta_threshold = self.strike_aggregated_metrics[dxoi_col_agg_name].std() * delta_std_factor
-
-        flow_threshold = 0
-        if volmbs15_col_agg_name in self.strike_aggregated_metrics.columns and not self.strike_aggregated_metrics[volmbs15_col_agg_name].empty:
-            flow_threshold = self.strike_aggregated_metrics[volmbs15_col_agg_name].std() * flow_std_factor
-
-        # Ensure thresholds are not NaN (can happen if std is NaN, e.g. only one unique value in series)
-        delta_threshold = 0 if pd.isna(delta_threshold) else delta_threshold
-        flow_threshold = 0 if pd.isna(flow_threshold) else flow_threshold
+        # Calculate thresholds based on the absolute values of the original series
+        abs_delta_threshold = self._calculate_dynamic_threshold(delta_series_for_threshold_calc.abs(), sr_cfg.delta_significance_config, higher_is_better=True)
+        abs_flow_threshold = self._calculate_dynamic_threshold(flow_series_for_threshold_calc.abs(), sr_cfg.flow_significance_config, higher_is_better=True)
 
         level_types = []
         rationales = []
 
         for _, row in df_for_sr.iterrows():
-            level_type = "Uncertain"
-            rationale = "Default."
+            level_type = "Uncertain" # Default for this row
+            rationale_parts = []     # Default for this row
 
-            plausibility = row.get(cfg_cols_rep['composite_plausibility_score'], 0)
-            strike_price = row[strike_col_df]
+            plausibility = row.get(cfg_cols_rep.composite_plausibility_score, 0)
+            # strike_price already refers to the correct strike column from ranked_df (cfg_cols_rep.strike)
+            strike_price = row[cfg_cols_rep.strike]
 
             if plausibility >= plausibility_threshold_for_sr:
-                net_delta = row.get(dxoi_col_agg_name, 0) # Get from merged df
-                net_flow = row.get(volmbs15_col_agg_name, 0) # Get from merged df
+                rationale_parts.append(f"P={plausibility:.2f}")
+                net_delta = row.get(dxoi_col_name_in_merged_df, 0)
+                net_flow = row.get(volmbs15_col_name_in_merged_df, 0)
 
                 is_below_price = strike_price < self.underlying_price
                 is_above_price = strike_price > self.underlying_price
 
-                strong_pos_delta = net_delta > delta_threshold
-                strong_neg_delta = net_delta < -delta_threshold
-                strong_pos_flow = net_flow > flow_threshold
-                strong_neg_flow = net_flow < -flow_threshold
-
-                current_rationale_parts = [f"P={plausibility:.2f}"]
+                strong_pos_delta = net_delta > abs_delta_threshold
+                strong_neg_delta = net_delta < -abs_delta_threshold
+                strong_pos_flow = net_flow > abs_flow_threshold
+                strong_neg_flow = net_flow < -abs_flow_threshold
 
                 if is_below_price:
-                    current_rationale_parts.append("BelowPx")
-                    if strong_pos_delta and strong_pos_flow: level_type = "Support"; current_rationale_parts.append("++Δ&Flow")
-                    elif strong_pos_delta: level_type = "Support"; current_rationale_parts.append("+Δ")
-                    elif strong_pos_flow: level_type = "Support"; current_rationale_parts.append("+Flow")
-                    elif strong_neg_delta or strong_neg_flow: level_type = "Contested"; current_rationale_parts.append("--Δ/Flow")
-                    else: level_type = "Potential Support"; current_rationale_parts.append("NeutralΔ/Flow")
+                    rationale_parts.append("BelowPx")
+                    if strong_pos_delta and strong_pos_flow: level_type = "Support"; rationale_parts.append("++Δ&Flow")
+                    elif strong_pos_delta: level_type = "Support"; rationale_parts.append("+Δ")
+                    elif strong_pos_flow: level_type = "Support"; rationale_parts.append("+Flow")
+                    elif strong_neg_delta or strong_neg_flow: level_type = "Contested"; rationale_parts.append("--Δ/Flow vs S")
+                    else: level_type = "Potential Support"; rationale_parts.append("NeutralΔ/Flow")
                 elif is_above_price:
-                    current_rationale_parts.append("AbovePx")
-                    if strong_neg_delta and strong_neg_flow: level_type = "Resistance"; current_rationale_parts.append("--Δ&Flow")
-                    elif strong_neg_delta: level_type = "Resistance"; current_rationale_parts.append("-Δ")
-                    elif strong_neg_flow: level_type = "Resistance"; current_rationale_parts.append("-Flow")
-                    elif strong_pos_delta or strong_pos_flow: level_type = "Contested"; current_rationale_parts.append("++Δ/Flow")
-                    else: level_type = "Potential Resistance"; current_rationale_parts.append("NeutralΔ/Flow")
-                else: # At price
-                    current_rationale_parts.append("AtPx")
-                    if strong_pos_delta and strong_pos_flow: level_type = "Support"; current_rationale_parts.append("++Δ&Flow")
-                    elif strong_neg_delta and strong_neg_flow: level_type = "Resistance"; current_rationale_parts.append("--Δ&Flow")
-                    else: level_type = "Contested"; current_rationale_parts.append("MixedΔ/Flow")
-                rationale = ", ".join(current_rationale_parts)
+                    rationale_parts.append("AbovePx")
+                    if strong_neg_delta and strong_neg_flow: level_type = "Resistance"; rationale_parts.append("--Δ&Flow")
+                    elif strong_neg_delta: level_type = "Resistance"; rationale_parts.append("-Δ")
+                    elif strong_neg_flow: level_type = "Resistance"; rationale_parts.append("-Flow")
+                    elif strong_pos_delta or strong_pos_flow: level_type = "Contested"; rationale_parts.append("++Δ/Flow vs R")
+                    else: level_type = "Potential Resistance"; rationale_parts.append("NeutralΔ/Flow")
+                else: # At Price
+                    rationale_parts.append("AtPx")
+                    if strong_pos_delta and strong_pos_flow: level_type = "Support"; rationale_parts.append("++Δ&Flow")
+                    elif strong_neg_delta and strong_neg_flow: level_type = "Resistance"; rationale_parts.append("--Δ&Flow")
+                    else: level_type = "Contested"; rationale_parts.append("MixedΔ/Flow")
+
+                rationale = ", ".join(rationale_parts) if rationale_parts else "Threshold met, neutral signals."
             else:
                 rationale = f"Low Plaus. ({plausibility:.2f})"
 
             level_types.append(level_type)
             rationales.append(rationale)
 
-        df_for_sr[cfg_cols_rep['level_type']] = level_types
-        df_for_sr[cfg_cols_rep['sr_rationale']] = rationales
+        df_for_sr[cfg_cols_rep.level_type] = level_types
+        df_for_sr[cfg_cols_rep.sr_rationale] = rationales
 
-        # Construct list of columns that should be in the final output
-        # Start with columns from original ranked_df
-        final_output_cols = ranked_df.columns.tolist()
-        # Add new S/R columns if they are not already there (they shouldn't be)
-        if cfg_cols_rep['level_type'] not in final_output_cols:
-            final_output_cols.append(cfg_cols_rep['level_type'])
-        if cfg_cols_rep['sr_rationale'] not in final_output_cols:
-            final_output_cols.append(cfg_cols_rep['sr_rationale'])
+        # Select only columns that were in the original ranked_df plus the new S/R columns
+        # This ensures no extra columns from strike_aggregated_metrics (like _agg suffixed ones if merge keys were different) persist.
+        final_cols = ranked_df.columns.tolist() # Start with original columns
+        if cfg_cols_rep.level_type not in final_cols: final_cols.append(cfg_cols_rep.level_type)
+        if cfg_cols_rep.sr_rationale not in final_cols: final_cols.append(cfg_cols_rep.sr_rationale)
 
-        # Ensure df_for_sr has all these columns before selecting
-        for col in final_output_cols:
+        # Ensure all desired final columns actually exist in df_for_sr before selecting
+        # This can happen if ranked_df was empty initially and columns were added.
+        for col in final_cols:
             if col not in df_for_sr.columns:
-                 df_for_sr[col] = "Error" # Or np.nan, indicates logic error if this happens
+                # This case should ideally not happen if result_df was initialized correctly
+                df_for_sr[col] = "ErrorMissingCol" if col in [cfg_cols_rep.level_type, cfg_cols_rep.sr_rationale] else 0.0
 
-        return df_for_sr[final_output_cols]
+
+        return df_for_sr[final_cols]
 
 
     def analyze(self) -> pd.DataFrame:
-        cfg_cols_rep = self.config.cols_report
-        strike_col_report = cfg_cols_rep['strike']
+        cfg_cols_rep = self.config.report_column_map # Updated
 
         all_methodologies_df = self.run_all_methodologies()
+
+        expected_report_cols = [getattr(cfg_cols_rep, attr) for attr in cfg_cols_rep.__annotations__]
         if all_methodologies_df.empty:
-            return pd.DataFrame(columns=list(cfg_cols_rep.values()))
+            return pd.DataFrame(columns=expected_report_cols)
 
         ranking_factors_df = self._calculate_ranking_factors(all_methodologies_df)
         if ranking_factors_df.empty:
-             return pd.DataFrame(columns=list(cfg_cols_rep.values()))
+             return pd.DataFrame(columns=expected_report_cols)
 
         ranked_df_with_plausibility = self._calculate_composite_plausibility(ranking_factors_df)
 
-        if strike_col_report in all_methodologies_df.columns and cfg_cols_rep['methodology'] in all_methodologies_df.columns:
-            methods_per_strike = all_methodologies_df.groupby(strike_col_report)[cfg_cols_rep['methodology']].apply(
-                lambda x: ', '.join(sorted(list(set(x))))
-            ).reset_index(name=cfg_cols_rep['contributing_methods'])
+        # Ensure strike column from report_column_map is used for merging and grouping if different from input
+        # all_methodologies_df should have used report_column_map.strike already
+        if cfg_cols_rep.strike in all_methodologies_df.columns and \
+           cfg_cols_rep.methodology in all_methodologies_df.columns:
 
-            final_df = pd.merge(ranked_df_with_plausibility, methods_per_strike, on=strike_col_report, how='left')
-            final_df[cfg_cols_rep['contributing_methods']] = final_df[cfg_cols_rep['contributing_methods']].fillna('')
+            methods_per_strike = all_methodologies_df.groupby(cfg_cols_rep.strike)[cfg_cols_rep.methodology].apply(
+                lambda x: ', '.join(sorted(list(set(x))))
+            ).reset_index(name=cfg_cols_rep.contributing_methods)
+
+            final_df = pd.merge(ranked_df_with_plausibility, methods_per_strike,
+                                on=cfg_cols_rep.strike, # Both should use the report strike col name here
+                                how='left')
+            final_df[cfg_cols_rep.contributing_methods] = final_df[cfg_cols_rep.contributing_methods].fillna('')
         else:
             final_df = ranked_df_with_plausibility.copy()
-            final_df[cfg_cols_rep['contributing_methods']] = ''
+            final_df[cfg_cols_rep.contributing_methods] = '' # Ensure column exists
 
-        # final_df = self._filter_by_strike_clustering(final_df) # Pass-through for now
         final_df = self._determine_support_resistance(final_df)
 
-        for report_col_key, report_col_name in self.config.cols_report.items():
+        # Ensure all report columns are present as per ReportColumnConfig
+        for report_col_attr_name in cfg_cols_rep.__annotations__:
+            report_col_name = getattr(cfg_cols_rep, report_col_attr_name)
             if report_col_name not in final_df.columns:
-                if 'score' in report_col_key or 'factor' in report_col_key: final_df[report_col_name] = 0.0
-                elif 'count' in report_col_key: final_df[report_col_name] = 0
-                else: final_df[report_col_name] = "N/A"
+                # Provide default values based on typical content of the column
+                if 'score' in report_col_attr_name or 'factor' in report_col_attr_name:
+                    final_df[report_col_name] = 0.0
+                elif 'count' in report_col_attr_name:
+                    final_df[report_col_name] = 0
+                else: # Strings like methodology, rationale, level_type, strike
+                    final_df[report_col_name] = "N/A" if report_col_attr_name != 'strike' else 0.0
 
-        # Define the desired order of columns for the final report
+        # Define the desired order of columns for the final report using ReportColumnConfig attributes
         desired_column_order = [
-            cfg_cols_rep['strike'], cfg_cols_rep['composite_plausibility_score'],
-            cfg_cols_rep['level_type'], cfg_cols_rep['sr_rationale'],
-            cfg_cols_rep['methodology_count'], cfg_cols_rep['methodology_diversity_score'],
-            cfg_cols_rep['gamma_concentration_factor'], cfg_cols_rep['flow_consistency_factor'],
-            cfg_cols_rep['delta_gamma_alignment_factor'], cfg_cols_rep['volatility_sensitivity_factor'],
-            cfg_cols_rep['time_decay_sensitivity_factor'], cfg_cols_rep['contributing_methods'],
-            cfg_cols_rep['proximity_factor'] # Include proximity factor used in adjusted scores
+            cfg_cols_rep.strike, cfg_cols_rep.composite_plausibility_score,
+            cfg_cols_rep.level_type, cfg_cols_rep.sr_rationale,
+            cfg_cols_rep.methodology_count, cfg_cols_rep.methodology_diversity_score,
+            cfg_cols_rep.gamma_concentration_factor, cfg_cols_rep.flow_consistency_factor,
+            cfg_cols_rep.delta_gamma_alignment_factor, cfg_cols_rep.volatility_sensitivity_factor,
+            cfg_cols_rep.time_decay_sensitivity_factor, cfg_cols_rep.contributing_methods,
         ]
-        # Filter this list to include only columns that actually exist in final_df
+        # Add proximity_factor if it's defined in report_column_map and not already included
+        if hasattr(cfg_cols_rep, 'proximity_factor') and cfg_cols_rep.proximity_factor not in desired_column_order:
+             desired_column_order.append(cfg_cols_rep.proximity_factor)
+
         ordered_report_cols = [col for col in desired_column_order if col in final_df.columns]
-        # Include any other columns that might have been generated but are not in desired_column_order
+        # Include any other columns that might have been generated but are not in desired_column_order (e.g. raw scores from methodologies)
         other_cols = [col for col in final_df.columns if col not in ordered_report_cols]
 
-        return final_df[ordered_report_cols + other_cols].sort_values(
-            by=cfg_cols_rep['composite_plausibility_score'], ascending=False
+        final_ordered_df = final_df[ordered_report_cols + other_cols]
+
+        return final_ordered_df.sort_values(
+            by=cfg_cols_rep.composite_plausibility_score, ascending=False
         ).reset_index(drop=True)
 
 # --- Update __main__ test block ---
@@ -1381,10 +1395,31 @@ if __name__ == '__main__':
         current_price_test = 100.5
         market_metric_test_value = 0.25 # Example: Medium Volatility
 
-        analyzer_config = DarkpoolAnalyticsConfig()
-        # Ensure sr_settings is part of the config for the test
-        analyzer_config.sr_settings = {'plausibility_min_threshold': 0.3, 'delta_std_factor': 0.5, 'flow_std_factor': 0.5}
-
+        # Instantiate the new detailed config
+        analyzer_config = DarkpoolAnalyticsConfig(
+            report_column_map=ReportColumnConfig(strike="StrikePrice", composite_plausibility_score="Plausibility"), # Example of customizing report names
+            methodologies={
+                **DarkpoolAnalyticsConfig().methodologies,
+                "high_gamma_imbalance": MethodologySetting(
+                    enabled=True,
+                    threshold_config=ThresholdConfig(type="relative_percentile", percentile=0.85, fallback_value=1.0),
+                    proximity_influence_factor=0.6
+                )
+            },
+            ranking_factors_config=RankingFactorsConfig(
+                gamma_concentration=RankingFactorSetting(weight=0.25, normalization_method="max_abs"),
+                methodology_diversity=RankingFactorSetting(weight=0.35, normalization_method="none"),
+                flow_consistency=RankingFactorSetting(weight=0.15, normalization_method="tanh", tanh_scale_factor_source="std_dev"),
+                delta_gamma_alignment=RankingFactorSetting(weight=0.10, normalization_method="none"),
+                volatility_sensitivity=RankingFactorSetting(weight=0.10, normalization_method="iqr", iqr_clip_range=(0.0, 2.0)),
+                time_decay_sensitivity=RankingFactorSetting(weight=0.05, normalization_method="max_abs")
+            ),
+            sr_logic_config=SRLogicConfig(
+                plausibility_min_threshold_for_sr=0.25,
+                delta_significance_config=ThresholdConfig(type="relative_mean_factor", factor=0.75, fallback_value=5000.0),
+                flow_significance_config=ThresholdConfig(type="relative_mean_factor", factor=0.75, fallback_value=250.0)
+            )
+        )
 
         analyzer = EliteDarkpoolAnalyzer(
             options_df=sample_options_data_df.copy(),
@@ -1394,24 +1429,28 @@ if __name__ == '__main__':
         )
 
         print(f"Analyzer initialized. Current Regime: {analyzer.current_regime}")
+        print(f"Using config version: {analyzer.config.config_version}")
+        print(f"Report strike column name: {analyzer.config.report_column_map.strike}") # Example of accessing new config
 
         print("\n--- Running full analyze() method (Elite - with S/R logic) ---")
         final_analysis_df = analyzer.analyze()
 
         if not final_analysis_df.empty:
             print("Final analysis df (Top 10 ranked by plausibility with S/R):")
+            cfg_report = analyzer.config.report_column_map # Use the instance's config
             cols_to_show = [
-                analyzer_config.cols_report['strike'],
-                analyzer_config.cols_report['composite_plausibility_score'],
-                analyzer_config.cols_report['level_type'],
-                analyzer_config.cols_report['sr_rationale'],
-                analyzer_config.cols_report['contributing_methods'],
-                analyzer_config.cols_report['methodology_count']
+                cfg_report.strike,
+                cfg_report.composite_plausibility_score,
+                cfg_report.level_type,
+                cfg_report.sr_rationale,
+                cfg_report.contributing_methods,
+                cfg_report.methodology_count
             ]
+            # Ensure all columns in cols_to_show actually exist in the DataFrame
             cols_to_show_existing = [col for col in cols_to_show if col in final_analysis_df.columns]
             print(final_analysis_df[cols_to_show_existing].head(10).to_string())
 
-            sr_cols_expected = [analyzer_config.cols_report['level_type'], analyzer_config.cols_report['sr_rationale']]
+            sr_cols_expected = [cfg_report.level_type, cfg_report.sr_rationale]
             missing_sr_cols = [col for col in sr_cols_expected if col not in final_analysis_df.columns]
             if missing_sr_cols:
                 print(f"\nERROR: Missing S/R columns in final_analysis_df: {missing_sr_cols}")
@@ -1419,11 +1458,10 @@ if __name__ == '__main__':
                 print("\nS/R columns ('level_type', 'sr_rationale') are present in the final_analysis_df.")
 
             print("\nChecking value counts for 'level_type':")
-            if analyzer_config.cols_report['level_type'] in final_analysis_df.columns:
-                print(final_analysis_df[analyzer_config.cols_report['level_type']].value_counts(dropna=False))
+            if cfg_report.level_type in final_analysis_df.columns:
+                print(final_analysis_df[cfg_report.level_type].value_counts(dropna=False))
             else:
-                print("'level_type' column not found.")
-
+                print(f"'{cfg_report.level_type}' column not found.")
         else:
             print("Full analysis resulted in an empty DataFrame.")
 ```
